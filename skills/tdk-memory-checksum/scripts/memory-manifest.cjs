@@ -7021,7 +7021,7 @@ var require_dist = __commonJS((exports2) => {
   exports2.visitAsync = visit.visitAsync;
 });
 
-// skills/tdk-memory-checksum/scripts/memory-manifest.ts
+// memory-manifest.ts
 var import_node_crypto = require("node:crypto");
 var import_node_fs = require("node:fs");
 var import_node_path = require("node:path");

@@ -114,17 +114,21 @@ custom-root support inside this package is not an end-to-end TDK routing promise
 ## Maintainer build
 
 The checked-in artifact is built from TypeScript using the exact `yaml@2.9.0`
-lockfile. Maintainers, not consumers, run:
+lockfile in `skills/tdk-memory-checksum/scripts/`. Maintainers, not consumers, run
+these commands from the repository root:
 
 ```sh
-bun install --frozen-lockfile
-bun run build:memory-manifest
+(cd skills/tdk-memory-checksum/scripts && bun install --frozen-lockfile && bun run build:memory-manifest)
 node --test tests/*.test.mjs
 ```
 
 Rebuild the artifact after a source change and verify its bytes from a clean
 checkout before publishing. The YAML parser is ISC-licensed; its full notice is
 `skills/tdk-memory-checksum/scripts/RUNTIME-LICENSE.txt`.
+
+Build metadata deliberately stays out of the plugin root: Claude's marketplace
+installer treats a root `package.json` as a consumer dependency-install request.
+The nested build package is not loaded or installed by any memory operation.
 
 ## Licensing
 

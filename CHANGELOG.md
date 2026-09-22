@@ -15,6 +15,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), Semver.
 - Added explicit root resolution, two containment boundaries, malformed-manifest preflight, approval-gated repair, and deterministic free-text ranking without truncating highest-rank ties.
 - Added a standalone marketplace, MIT license, reproducible maintainer build, and Node-only local tests; TDK synchronization uses a one-way subtree with commit-derived drift checks.
 - TDK release packaging excludes runtime `.logs/`, maintainer dependencies, and plugin-local tests; directory-glob exclusions are now honored by release inventory generation.
+- Kept the maintainer package and lock beside the TypeScript source, not at plugin root, so marketplace installation does not auto-install build dependencies.
 
 ## [3.0.3] - 2026-08-17
 

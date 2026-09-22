@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@tihon/tdk-memory-runtime-build",
+      "name": "tdk-memory-runtime-build",
       "devDependencies": {
         "yaml": "2.9.0",
       },
