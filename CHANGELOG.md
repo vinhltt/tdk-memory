@@ -4,6 +4,11 @@ All notable changes to this plugin will be documented in this file.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), Semver.
 
+## [4.1.1] - 2026-10-21
+
+### Fixed
+- `tdk-memory-update` preconfirmed candidate mode now runs Step 5.1 enrichment (block IDs, wikilinks) when it creates a new file, matching the new-file branch of Step 5. Step 5.1 runs without any prompt; no other behaviour changes.
+
 ## [4.1.0] - 2026-10-21
 
 ### Added

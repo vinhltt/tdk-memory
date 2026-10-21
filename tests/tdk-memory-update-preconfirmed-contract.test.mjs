@@ -118,13 +118,24 @@ describe('tdk-memory-update preconfirmed candidate mode', () => {
     assert.ok(parseCandidate(`--memory-root memory\n${candidate()}`), 'flags may precede the block');
   });
 
+  test('new-file enrichment runs in candidate mode without a prompt', () => {
+    assert.match(modeSection, /new-file enrichment with block IDs and\s+wikilinks/);
+    assert.match(modeSection, /Step 5\.1 runs without a\s+prompt whenever Step 5 creates a new file/);
+    const enrichment = flow.slice(
+      flow.indexOf('## Step 5.1 '),
+      flow.indexOf('## Step 5.2 '),
+    );
+    assert.ok(enrichment.length > 0, 'Step 5.1 section exists');
+    assert.doesNotMatch(enrichment, /AskUserQuestion/);
+  });
+
   test('complete candidate runs without prompts and skips the interactive confirmations', () => {
     assert.match(modeSection, /no `AskUserQuestion` anywhere in this mode/);
     assert.match(modeSection, /Step 2\.5 skipped/);
     assert.match(modeSection, /No Domain Source\s+Files prompt/);
     assert.match(modeSection, /no domain confirm or mismatch check/);
     assert.match(modeSection, /Step 4\.5 skipped/);
-    assert.match(modeSection, /Run Steps 1, 3, 5, 5\.2, 6 and 7 unchanged/);
+    assert.match(modeSection, /Run Steps 1, 3, 5, 5\.1, 5\.2, 6 and 7 unchanged/);
     assert.match(modeSection, /memory-index\.md/);
     assert.match(modeSection, /`memory\.yaml`\s+checksums/);
     assert.match(modeSection, /Result: written \| already present \| error: <reason>/);
@@ -196,12 +207,12 @@ describe('tdk-memory-update preconfirmed candidate mode', () => {
     assert.match(agent, /===TDK-MEMORY-CONTROL===/);
   });
 
-  test('release metadata is 4.1.0 across manifests and the update skill', () => {
+  test('release metadata is 4.1.1 across manifests and the update skill', () => {
     for (const manifest of ['.claude-plugin', '.codex-plugin', '.cursor-plugin']) {
       const { version } = JSON.parse(read(PLUGIN_ROOT, manifest, 'plugin.json'));
-      assert.equal(version, '4.1.0', `${manifest} version`);
+      assert.equal(version, '4.1.1', `${manifest} version`);
     }
-    assert.match(skill, /^metadata:\r?\n  version: 4\.1\.0$/m);
-    assert.match(read(PLUGIN_ROOT, 'CHANGELOG.md'), /^## \[4\.1\.0\] - 2026-10-21$/m);
+    assert.match(skill, /^metadata:\r?\n  version: 4\.1\.1$/m);
+    assert.match(read(PLUGIN_ROOT, 'CHANGELOG.md'), /^## \[4\.1\.1\] - 2026-10-21$/m);
   });
 });

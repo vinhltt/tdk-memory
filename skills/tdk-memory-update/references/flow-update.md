@@ -54,9 +54,11 @@ interactive flow below exactly as written, treating `$ARGUMENTS` as the request.
 
 ### Behaviour
 
-Run Steps 1, 3, 5, 5.2, 6 and 7 unchanged (routing through `memory-index.md`,
-template materialization, heading patch, index regeneration, `memory.yaml`
-checksums). Differences, with no `AskUserQuestion` anywhere in this mode:
+Run Steps 1, 3, 5, 5.1, 5.2, 6 and 7 unchanged (routing through `memory-index.md`,
+template materialization, heading patch, new-file enrichment with block IDs and
+wikilinks, index regeneration, `memory.yaml` checksums). Step 5.1 runs without a
+prompt whenever Step 5 creates a new file. Differences, with
+no `AskUserQuestion` anywhere in this mode:
 
 1. **Step 2 routing:** resolve the target from `type` + `domain` (+ `name`),
    not from prose:
