@@ -2,7 +2,7 @@
 name: tdk-memory-update
 description: "Update project memory: add services, business rules, data models, or domain knowledge; modify section anchors; deprecate a memory file. Routes natural language updates through memory-index.md and maintains memory.yaml checksums. Also accepts a complete preconfirmed candidate block that writes without prompts. Supports --deprecate [path] and --memory-root [path]."
 metadata:
-  version: 4.1.1
+  version: 4.2.0
   category: "Context & Memory"
   requires:
     - tdk-memory-query
@@ -64,7 +64,7 @@ $ARGUMENTS
 ```
 
 Flags: `--deprecate [path]`, `--finalize-written [handoff.json]`,
-`--memory-root [path]`, and explicit `--allow-external-root`.
+`--memory-root [path]`, and `--allow-external-root` (per-invocation permission).
 
 After root/runtime/YAML preflight, `--deprecate` follows
 `references/deprecation-flow.md`. `--finalize-written` follows
@@ -112,8 +112,16 @@ Ends with one line: `Result: written`, `Result: already present`, or
 Complete the shared preflight. Before reading a template, invoke
 `/tdk-memory-init --ensure-templates --memory-root <memoryRoot>` by skill name,
 then read only `<memoryRoot>/_templates/`. Do not access another plugin's files.
-Forward `--allow-external-root` to this nested invocation and runtime calls only
-when the current caller explicitly supplied it. Never infer consent from config.
+Resolve external-root permission once for this operation (the contract: the flag in
+this invocation, or `memory.allowExternal: true` for the root `memory.path` names)
+and forward `--allow-external-root` to this nested invocation and to every runtime
+call whenever permission exists. Permission is not consent to write: the first
+write to an external root in a session is confirmed once (contract section 2),
+for every mode including `--deprecate`, `--finalize-written` and the preconfirmed
+candidate. When the session cannot ask, STOP with no write (a candidate ends with
+`Result: error: external-root-consent-required — <memory.path as configured>`).
+After writing to an external root, remind the user to commit inside the memory
+repository; never run git here.
 
 ### Step 0: File-backed update
 

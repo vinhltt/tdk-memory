@@ -15,6 +15,12 @@ shell; unset plugin variables must never become filesystem-root paths.
 Discover `workspaceRoot` from the nearest ancestor of the invocation cwd containing
 `.git` (file or directory) or `.specify/`; otherwise use cwd and report that choice.
 Resolve relative paths against that workspace, not against the installed plugin.
+One exception: when the workspace is a linked git worktree (first entry of
+`git worktree list --porcelain` is a different directory), a relative `memory.path`
+that leaves the repository (for example `../team-memory`) resolves from that main
+worktree, so every worktree of a repository reaches the same root. A relative
+`memory.path` that stays inside the repository keeps resolving in the current
+worktree. Outside a git repository the base is `workspaceRoot`.
 
 | Priority | Source | Condition |
 |---|---|---|
@@ -25,20 +31,52 @@ Resolve relative paths against that workspace, not against the installed plugin.
 | 5 | Fresh initialization only | Default root `.specify/memory/` when `.specify/` exists; otherwise `memory/` |
 
 If no explicit/configured root selects a directory and both default candidates
-exist, STOP, list both, and require `--memory-root`. Never guess. Invalid config
-is an error, not permission to silently choose another root. Non-init operations
-with no root STOP with initialization guidance. Config is optional; do not ask to
-create it on a standalone install. Offer to persist a selection only when the
-workspace already has `.specify/` and the user wants it.
+exist, STOP, list both, and require `--memory-root`. Never guess. A configured or
+explicit root that does not exist is an error; only initialization creates a root.
+Invalid config is an error, not permission to silently choose another root. Config
+is invalid when `memory.path` is not a nonempty string or contains a control
+character, newline, or any of `` ` `` `$` `"` `'` `;` `&` `|` `<` `>`, when
+`memory.allowExternal` is not a boolean, or when the file is not a JSON object.
+`~` is a literal path segment and is never expanded. Pass paths to shell commands
+as one quoted argument after validation, never interpolated into a command string.
+Non-init operations with no root STOP with initialization guidance. Config is
+optional; do not ask to create it on a standalone install. Offer to persist a
+selection only when the workspace already has `.specify/` and the user wants it.
 
-Use `<memoryRoot>` in all following operations. Emit `Evidence: <path>#<anchor>`
-and query paths as canonical workspace-relative POSIX paths, preserving casing.
-`--allow-external-root` is an explicit per-invocation exception to workspace
-containment, never inferred from configuration; report external evidence using
-its canonical absolute path rather than disguising it as a workspace path.
+Use `<memoryRoot>` (the canonical absolute root) in all following operations.
+
+**Evidence paths.** Root inside the workspace: emit `Evidence: <path>#<anchor>` and
+query paths as canonical workspace-relative POSIX paths, preserving casing. Root
+outside the workspace: emit them relative to the memory root (no `..`, no absolute
+path, no machine-specific prefix) so artifacts stay portable.
+
+**External roots.** A root whose canonical path is not inside the canonical
+workspace is external. Permission is resolved once per operation and is granted by
+either of:
+
+1. `--allow-external-root` supplied in this invocation; or
+2. `memory.allowExternal: true` in `.specify/.specify.json` **and** the canonical
+   root equals the canonical root of `memory.path`.
+
+An explicit `--memory-root` that points to an external root other than `memory.path`
+always needs the flag. The flag never changes which root is selected (source order
+above still applies). Without permission, STOP with
+`external-not-allowed — <memory.path as configured>` plus how to enable it (add
+`"allowExternal": true` beside `memory.path`) and perform zero writes. Error lines,
+warnings, and any value persisted into a workspace artifact carry only a code and
+`memory.path` exactly as configured; the canonical root may appear on the
+terminal for the current session only.
+
+**Forwarding.** The bundled runtime reads no config. Every
+`memory-manifest.cjs hash|validate|resolve` call within an operation appends
+`--allow-external-root` whenever permission was established by either source
+above. `tdk-memory-query` applies the config clause itself, so a caller invoking
+it needs no flag.
 
 **Check:** fixtures with no config, a configured `docs/brain`, an explicit override,
-and both default directories must resolve deterministically or STOP as above.
+and both default directories must resolve deterministically or STOP as above. An
+external root with `allowExternal` and a matching `memory.path` is accepted; the
+same root passed through a different `--memory-root` without the flag STOPs.
 
 ## 2. Containment before any IO
 
@@ -46,8 +84,8 @@ Canonicalize workspace, memory root, and every target using real paths. For an
 absent write target, resolve its nearest existing ancestor and append only the
 remaining normalized components. Do not use string-prefix checks.
 
-1. Require `workspaceRoot` to contain canonical `memoryRoot`, unless the user
-   explicitly supplied `--allow-external-root` in this invocation.
+1. Require `workspaceRoot` to contain canonical `memoryRoot`, unless external-root
+   permission exists under section 1.
 2. Always require canonical `memoryRoot` to contain each read/write/move target.
    This applies to both endpoints of deprecation, manifest records, index links,
    temporary files, and `_templates/` destinations. Reject cross-drive paths.
@@ -55,8 +93,23 @@ remaining normalized components. Do not use string-prefix checks.
    publishing a file. Never follow links to inspect files outside the boundary.
 4. Validate domain identifiers as kebab-case names; reject separators, `.`/`..`,
    and every name starting with `_` (reserved for managed assets).
+5. External-root writes need consent. The first write to an external root in a
+   session (initialization, `--ensure-templates`, update including preconfirmed and
+   `--finalize-written` modes, `checksum --fix`, changelog) is confirmed once by
+   the main session: state `memory.path` as configured plus the canonical root and
+   ask for approval. Keep that state in the conversation only (no marker file); if
+   unsure it was already asked, for example after context compaction, ask again.
+   When the session cannot ask (no `AskUserQuestion`, or the call fails) STOP with
+   remediation instead of writing; only an `--allow-external-root` typed by the
+   user in this invocation bypasses the question. Consumer skills never pass that
+   flag themselves. Reads need no consent.
+6. A root outside the workspace requires `memory.yaml` for every operation except
+   initialization. Initialization, including `--ensure-templates` on an external
+   root that is not yet initialized, always confirms first and STOPs when it
+   cannot ask.
 
-The bundled manifest runtime enforces these checks for hashes and validation.
+The bundled manifest runtime enforces the containment checks for hashes and
+validation and reports root state through `resolve`.
 Agent file tools must enforce them independently before mutation. Source files
 explicitly supplied for domain extraction are read-only inputs under the existing
 source-extraction guards, not permission to write outside memory.
@@ -98,13 +151,18 @@ Every invocation is self-contained; never retain a shell variable across tools:
 
 ```sh
 node -e 'if (Number(process.versions.node.split(".")[0]) < 18) process.exit(1)' &&
-node "${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" validate "<memoryRoot>"
+node "${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" validate "<memoryRoot>" [--allow-external-root]
 ```
 
 For a hash replace the subcommand with `hash "<memoryRoot>" "<relative-file>"`.
-Its output is plain 64-hex text; only `validate` emits JSON.
-Pass `--allow-external-root` only when explicitly authorized. Probe Node before
-any write. Both runtime subcommands are read-only; no `rebuild` operation exists.
+Its output is plain 64-hex text; `validate` and `resolve` emit JSON.
+`resolve [--memory-root "<path>"] [--allow-external-root]` applies section 1 and
+reports `status`, `root`, `memory_path`, `external`, coverage, domains, constitution,
+`warnings`, and `error`. Root-state problems are reported inside that JSON with exit
+zero; a nonzero exit means an internal fault. `tdk-memory-query --status` renders it.
+Append `--allow-external-root` whenever section 1 granted external-root permission.
+Probe Node before any write. All runtime subcommands are read-only; no `rebuild`
+operation exists.
 Exit nonzero means a fatal error: STOP and show the error. Exit zero means the
 report was produced, NOT that integrity is clean. Inspect every mismatch list,
 missing list, and `index_mismatch` before accepting a write/repair candidate.
@@ -122,7 +180,9 @@ receipt has `path`, `sha256`, and `source_version`.
 
 Before dispatch (including `--deprecate`) and before the first write:
 
-1. Resolve root/containment and probe Node.
+1. Resolve root/containment and external-root permission once (section 1), obtain
+   write consent for an external root (section 2), and probe Node. Every runtime
+   call below forwards `--allow-external-root` when permission exists.
 2. If the manifest exists, run bundled validation to parse and check it. Malformed
    YAML, duplicate records, invalid field types/hashes, or unsafe paths STOP
    ordinary operations and point to `/tdk-memory-checksum --fix`.
@@ -156,9 +216,11 @@ index and modified note must remain visible until explicitly addressed.
 
 ## Outside scope: upstream existence gates
 
-Custom roots apply inside this plugin. The following upstream gates still use
-the default root `.specify/memory/`; this release does not promise custom-root
-support end-to-end through TDK. Anchors refer to the pre-cutover source:
+Custom and external roots apply inside this plugin. TDK consumers keep using the
+default root `.specify/memory/` until a TDK release that routes through
+`/tdk-memory-query --status`; do not set `memory.path` in a TDK workspace before
+then. The following upstream gates still use the default root. Anchors refer to
+the pre-cutover source:
 
 - `tdk-core/skills/tdk-plan/SKILL.md:135`
 - `tdk-core/skills/tdk-plan/references/gates.md:48`
@@ -168,7 +230,7 @@ support end-to-end through TDK. Anchors refer to the pre-cutover source:
 - `tdk-inception/skills/tdk-constitution/SKILL.md:109`
 - `tdk-retro/skills/tdk-retro-propose/SKILL.md:71`
 - `tdk-retro/skills/tdk-retro-apply/references/apply-flow-memory.md:7`
-- `tdk-core/hooks/lib/context-builder.cjs:80`
+- `tdk-core/lib/context-builder.cjs:80`
 
 ## 7. Optional application opening
 

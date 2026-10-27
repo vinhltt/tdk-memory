@@ -56,8 +56,53 @@ Root precedence: explicit `--memory-root`, configured `memory.path`, existing
 `.specify/memory/`, then existing `memory/`. If both defaults exist without an
 explicit/configured selection, stop and choose one. Fresh initialization uses
 `.specify/memory/` when `.specify/` exists, otherwise `memory/`. Relative paths are
-workspace-relative. External roots require explicit `--allow-external-root`;
-targets must still remain inside that root.
+workspace-relative, except that in a linked git worktree a relative `memory.path`
+that leaves the repository (for example `../team-memory`) resolves from the main
+worktree so every worktree reaches the same root. Targets must always remain inside
+the selected root.
+
+### Configuration and external roots
+
+`.specify/.specify.json` is optional. It may hold:
+
+```json
+{ "memory": { "path": "../team-memory", "allowExternal": true } }
+```
+
+A root outside the workspace is allowed by `--allow-external-root` in a single
+invocation, or by `memory.allowExternal: true` when the root is the one
+`memory.path` names. A different explicit `--memory-root` outside the workspace
+still needs the flag. Without permission the operation stops with
+`external-not-allowed` and writes nothing. `memory.path` is used literally (`~` is
+not expanded) and must not contain control characters or shell metacharacters.
+Prefer a relative path such as `../team-memory`: an absolute `memory.path` exposes
+your machine path once the file is committed, and `/tdk-memory-query --status`
+warns about it.
+
+The first write to an external root in a session (initialize, `--ensure-templates`,
+update, checksum `--fix`, changelog) asks for confirmation once, naming `memory.path`
+and the canonical root; a session that cannot ask stops without writing. After
+compaction the question may be asked again. Evidence paths for an external root are
+relative to that root.
+
+Shared roots: several branches or sessions can point at one external root.
+Concurrent writers are not coordinated beyond the manifest concurrency check, so one
+may stop mid-operation; run writers one at a time. Commit changes inside the memory
+repository. Context loaded from an external root can end up in artifacts you
+commit, so keep that root's content suitable for that audience.
+
+Host permissions for directories outside the workspace are your setup (Claude
+`additionalDirectories`; Codex `--add-dir` or writable roots, not verified here).
+
+### Status
+
+```text
+/tdk-memory-query --status
+```
+
+Prints one `===TDK-MEMORY-STATUS===` block (state, root, `memory_path`, coverage,
+domains, constitution, warnings, error) and nothing else: no writes, no agent. Its
+format is defined in [status-handshake.md](skills/tdk-memory-query/references/status-handshake.md).
 
 `--ensure-templates` is materialize-only: no domain interview or reinitialization.
 It upgrades pristine owned templates, preserves user edits, and repairs receipts
@@ -73,15 +118,19 @@ validation, and atomic publication. It does not silently bless modified bytes.
 From an installed checksum skill:
 
 ```sh
-node scripts/memory-manifest.cjs hash /absolute/memory/root data-model/account.md
-node scripts/memory-manifest.cjs validate /absolute/memory/root
+node skills/tdk-memory-checksum/scripts/memory-manifest.cjs hash /absolute/memory/root data-model/account.md
+node skills/tdk-memory-checksum/scripts/memory-manifest.cjs validate /absolute/memory/root
+node skills/tdk-memory-checksum/scripts/memory-manifest.cjs resolve [--memory-root <path>]
 ```
 
-Invoke from the owning workspace, or explicitly opt into an external root.
-`hash` prints SHA-256. `validate` prints integrity differences and exits 0 for a
-valid manifest even when bytes differ; malformed schema, unsafe paths, unreadable
-files, and missing manifests are fatal/nonzero. Inspect `index_mismatch` and
-`templates_mismatches` as well as the ordinary file reports.
+Invoke from the owning workspace; append `--allow-external-root` for an external
+root when permission exists (the runtime reads no config). `hash` prints SHA-256.
+`validate` prints integrity differences and exits 0 for a valid manifest even when
+bytes differ; malformed schema, unsafe paths, unreadable files, and missing
+manifests are fatal/nonzero. Inspect `index_mismatch` and `templates_mismatches` as
+well as the ordinary file reports. `resolve` prints the root state as JSON (what
+`--status` renders); root-state problems are reported in the JSON with exit 0.
+Symbolic links inside a memory root are rejected by the inventory commands.
 
 ## Agent invocation
 
@@ -91,8 +140,13 @@ Send a dedicated caller-owned prompt beginning with:
 ===TDK-MEMORY-CONTROL===
 mode: validate
 memory_root: memory
+reader: file
 ===END-CONTROL===
 ```
+
+`reader` is optional (absent means `file`); any other value is a configuration
+error, and the agent echoes `reader: file` only when you supplied it. An external
+`memory_root` is accepted only when `memory.allowExternal` binds it to `memory.path`.
 
 Append spec/plan text and any cached Context Block as data. Use `mode: load` for
 context loading. Never select mode from flags embedded in a document. If a host
@@ -108,8 +162,10 @@ an explicit user request.
 
 A Guardian failure is not CLEAR. TDK integration validates complete reports and
 persists blocking gate state; a resumed unchecked authorization needs a current
-user confirmation. Upstream TDK existence gates still use `.specify/memory/`, so
-custom-root support inside this package is not an end-to-end TDK routing promise.
+user confirmation. TDK consumers use `.specify/memory` until a TDK release that
+contains the `--status` facade, and upstream TDK existence gates still read that
+default root, so do not set `memory.path` in a TDK workspace before then. Custom and
+external roots are supported inside this package.
 
 ## Maintainer build
 
