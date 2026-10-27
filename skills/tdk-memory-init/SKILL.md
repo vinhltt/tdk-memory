@@ -18,7 +18,7 @@ metadata:
 
 Before any dispatch or write, load `references/memory-root-and-asset-contract.md`
 and follow its section 1: step 1 is `memory-manifest.cjs resolve` (explicit
-`--memory-root` only if given, `--allow-external-root` only if the user typed it);
+`--memory-root` only if given, `--allow-external-root` if present in this invocation's arguments, typed or forwarded);
 `<memoryRoot>` is the JSON `root`. Initialization accepts `status: uninitialized` and
 `error: root-missing` with a non-null `root`; any other `error` STOPs. Do not require
 TDK configuration. Probe Node.js >=18 and run the contract's YAML preflight; all

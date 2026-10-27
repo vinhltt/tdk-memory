@@ -113,7 +113,7 @@ describe('external root contract', () => {
 
   test('states that a forwarded flag is permission and never consent', () => {
     assert.match(contract, /\*\*Permission is not consent\.\*\*/);
-    assert.match(contract, /A flag forwarded because of configuration is\s+permission, never consent/);
+    assert.match(flat(contract), /A flag that a skill forwarded \(because `resolve` reported an external root\) is permission, never consent/);
     assert.match(contract, /a skill called inline by another skill/);
     assert.match(contract, /no\s+`AskUserQuestion`, as in a subagent/);
   });
@@ -144,7 +144,10 @@ describe('external root contract', () => {
     assert.match(contract, /`~` is a literal segment/);
     assert.match(contract, /equal to the filesystem root, to the workspace, or to any ancestor of the\s+workspace is `containment`/);
     assert.match(contract, /sub-workspace that has its own\s+`\.specify\/` below the repository's `\.git`/);
-    assert.match(contract, /rule: a hit in `memory\.path` itself is\s+`config-invalid`, any other hit is `containment`/i);
+    assert.match(flat(contract), /a hit in `memory\.path` itself, judged by the strict set above, is `config-invalid`; a hit in a resolved location, judged by the narrow set, is `containment`/);
+    assert.match(flat(contract), /`&`, `'`, `;`, `\|`, `<`,\s+`>` are fine in a location/);
+    assert.match(flat(agent), /`\$`, or `"`, or a backslash when not running on Windows/);
+    assert.match(flat(readme), /A memory root equal to the workspace is refused/);
     assert.match(contract, /git worktree list --porcelain/);
     assert.match(contract, /relative to the memory root \(no `\.\.`, no absolute\s+path/);
     assert.match(contract, /Do not use string-prefix checks/);
@@ -199,6 +202,16 @@ describe('external root contract', () => {
       assert.match(text, /JSON `root`/, path);
       assert.doesNotMatch(text, /for the root `memory\.path` names|canonical (root|path) equal/, path);
     }
+  });
+
+  test('nested-call wording passes the flag when the invocation carries it, and checksum stops with a --fix hint', () => {
+    for (const path of ['init', 'update', 'checksum', 'changelog', 'query']) {
+      const text = flat(read(`skills/tdk-memory-${path}/SKILL.md`));
+      assert.doesNotMatch(text, /only if the user typed it/, path);
+      assert.match(text, /if present in this invocation's arguments, typed or forwarded/, path);
+    }
+    assert.match(flat(contract), /whether the user typed it or a parent skill forwarded it/);
+    assert.match(flat(read('skills/tdk-memory-checksum/SKILL.md')), /without `--fix`, `memory-incomplete` STOPs with a message suggesting `\/tdk-memory-checksum --fix`/);
   });
 
   test('changelog uses the memory repository for an external root', () => {

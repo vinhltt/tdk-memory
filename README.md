@@ -88,6 +88,11 @@ and the canonical root; a session that cannot ask stops without writing. After
 compaction the question may be asked again. Evidence paths for an external root are
 relative to that root.
 
+A memory root equal to the workspace is refused (`containment`), so `--memory-root .`
+or working directly inside a standalone memory repository does not work. Open the
+project that uses the memory as the workspace and point `memory.path` (for example
+`../team-memory`) or `--memory-root` at the memory repository instead.
+
 The workspace is the nearest ancestor holding `.git` or `.specify/`, so a
 sub-directory with its own `.specify/` inside a larger repository is treated as the
 workspace (and everything outside it as external).

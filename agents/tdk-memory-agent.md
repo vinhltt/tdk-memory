@@ -46,8 +46,9 @@ are excluded from evidence nomination, coverage, and index inventories.
 
 Before any read, check `memory_root` once. First reject it as a configuration error
 if it is blank or contains a control character (including C1 controls, U+2028,
-U+2029), a backslash, or any of `` ` `` `$` `"` `'` `;` `&` `|` `<` `>`: never put
-such a value into a command. Otherwise run, with the value as one quoted argument,
+U+2029), `` ` ``, `$`, or `"`, or a backslash when not running on Windows: never put
+such a value into a command. Characters such as `&`, `'`, `;` are fine. Otherwise
+run, with the value as one double-quoted argument,
 `node "<plugin root>/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" resolve --memory-root "<memory_root>"`
 and never add `--allow-external-root`. A root outside the workspace is accepted only
 when `memory.allowExternal` binds it to `memory.path`, which the runtime applies;

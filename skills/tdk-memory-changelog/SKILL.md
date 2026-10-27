@@ -14,7 +14,7 @@ metadata:
 Before reading staged paths or writing anything, load
 `${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-init/references/memory-root-and-asset-contract.md`.
 Follow its section 1: step 1 is `memory-manifest.cjs resolve` (explicit `--memory-root`
-only if given, `--allow-external-root` only if the user typed it); `<memoryRoot>` is
+only if given, `--allow-external-root` if present in this invocation's arguments, typed or forwarded); `<memoryRoot>` is
 the JSON `root` and any `error` STOPs with its code. Complete Node/YAML preflight.
 Preserve `templates[]`; template assets are not knowledge changes. When `resolve`
 reports `external: true` with a root, forward `--allow-external-root` to every

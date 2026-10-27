@@ -7,8 +7,8 @@ any memory file in this mode. The mode writes nothing and spawns no agent.
 ## Procedure
 
 1. Probe Node: `node -e 'if (Number(process.versions.node.split(".")[0]) < 18) process.exit(1)'`.
-2. Run the shipped runtime once, passing only what the user supplied in this
-   invocation (`--memory-root <path>` and/or `--allow-external-root`):
+2. Run the shipped runtime once, passing only what this invocation's arguments carry
+   (`--memory-root <path>` and/or `--allow-external-root`):
 
    ```sh
    node "${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" resolve [--memory-root "<path>"] [--allow-external-root]

@@ -49,7 +49,7 @@ spawns no agent.
 Before dispatch, load
 `${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-init/references/memory-root-and-asset-contract.md`
 and follow its section 1: step 1 is `memory-manifest.cjs resolve` (`--memory-root` only
-if the caller gave one, `--allow-external-root` only if the user typed it).
+if the caller gave one, `--allow-external-root` if present in this invocation's arguments, typed or forwarded).
 `<memoryRoot>` is the JSON `root`; any `error` STOPs with its code, and
 `uninitialized` STOPs with initialization guidance. Then enforce both containment
 layers and run read-only YAML preflight using the shipped Node.js runtime. When

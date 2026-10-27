@@ -3,6 +3,7 @@ var __create = Object.create;
 var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 function __accessProp(key) {
   return this[key];
@@ -29,7 +30,37 @@ var __toESM = (mod, isNodeMode, target) => {
     cache.set(mod, to);
   return to;
 };
+var __toCommonJS = (from) => {
+  var entry = (__moduleCache ??= new WeakMap).get(from), desc;
+  if (entry)
+    return entry;
+  entry = __defProp({}, "__esModule", { value: true });
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (var key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(entry, key))
+        __defProp(entry, key, {
+          get: __accessProp.bind(from, key),
+          enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable
+        });
+  }
+  __moduleCache.set(from, entry);
+  return entry;
+};
+var __moduleCache;
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
 
 // node_modules/yaml/dist/nodes/identity.js
 var require_identity = __commonJS((exports2) => {
@@ -7022,6 +7053,11 @@ var require_dist = __commonJS((exports2) => {
 });
 
 // memory-manifest.ts
+var exports_memory_manifest = {};
+__export(exports_memory_manifest, {
+  hasForbiddenLocationCharacter: () => hasForbiddenLocationCharacter
+});
+module.exports = __toCommonJS(exports_memory_manifest);
 var import_node_child_process = require("node:child_process");
 var import_node_crypto = require("node:crypto");
 var import_node_fs = require("node:fs");
@@ -7052,6 +7088,7 @@ var CONSTITUTION_PATH = "constitution.md";
 var MAX_CONFIG_BYTES = 1048576;
 var MAX_INDEX_BYTES = 4194304;
 var FORBIDDEN_MEMORY_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\`$"';&|<>]/;
+var FORBIDDEN_LOCATION_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029`$"]/;
 var COVERAGE_PATTERN = /^Binding coverage: (\d+)(?: of |\/)(\d+) typed files[ \t\r]*$/m;
 var DOMAIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 var SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -7601,6 +7638,9 @@ async function hash(memoryRootArgument, relativePath, allowExternalRoot) {
     fail(`file not found: ${import_node_path.join(memoryRoot, ...validateRelativePath(relativePath, "hash path"))}`);
   console.log(await hashRegularFile(target.path));
 }
+function hasForbiddenLocationCharacter(value, platform = process.platform) {
+  return FORBIDDEN_LOCATION_CHARACTERS.test(value) || platform !== "win32" && value.includes("\\");
+}
 function displayMemoryPath(value) {
   return value.replace(new RegExp(FORBIDDEN_MEMORY_PATH_CHARACTERS.source, "g"), "?");
 }
@@ -7809,7 +7849,7 @@ async function resolveStatus(explicitRoot, allowFlag) {
     }
   }
   const canonicalRoot = await realpathFromNearestExisting(lexicalRoot);
-  if (FORBIDDEN_MEMORY_PATH_CHARACTERS.test(canonicalRoot) || FORBIDDEN_MEMORY_PATH_CHARACTERS.test(workspaceRoot)) {
+  if (hasForbiddenLocationCharacter(canonicalRoot) || hasForbiddenLocationCharacter(workspaceRoot)) {
     return failure("containment");
   }
   const lexicallyInside = isContained(workspaceRoot, lexicalRoot);
@@ -7878,7 +7918,9 @@ async function main() {
     await resolveCommand(invocation.memoryRootArgument, invocation.allowExternalRoot);
   }
 }
-main().catch((error) => {
-  console.error(`ERROR: ${errorMessage(error)}`);
-  process.exitCode = 1;
-});
+if (require.main == module) {
+  main().catch((error) => {
+    console.error(`ERROR: ${errorMessage(error)}`);
+    process.exitCode = 1;
+  });
+}

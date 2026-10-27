@@ -34,6 +34,10 @@ const MAX_INDEX_BYTES = 4_194_304;
 // Characters that could break out of a quoted shell argument or a one-line status field:
 // C0/C1 controls, line/paragraph separators, backslash, and shell metacharacters.
 const FORBIDDEN_MEMORY_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\`$"';&|<>]/;
+// A resolved location (canonical root, workspace) is only ever placed inside double
+// quotes, so only characters that stay active there matter. A backslash is a path
+// separator on Windows and an escape elsewhere.
+const FORBIDDEN_LOCATION_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029`$"]/;
 const COVERAGE_PATTERN = /^Binding coverage: (\d+)(?: of |\/)(\d+) typed files[ \t\r]*$/m;
 const DOMAIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -671,6 +675,10 @@ type RawConfig =
   | { invalid: true; displayPath: string }
   | { invalid: false; displayPath: string; memoryPath: string | undefined; allowExternal: boolean; readerBackend: string | undefined };
 
+export function hasForbiddenLocationCharacter(value: string, platform: string = process.platform): boolean {
+  return FORBIDDEN_LOCATION_CHARACTERS.test(value) || (platform !== "win32" && value.includes("\\"));
+}
+
 function displayMemoryPath(value: string): string {
   return value.replace(new RegExp(FORBIDDEN_MEMORY_PATH_CHARACTERS.source, "g"), "?");
 }
@@ -878,10 +886,10 @@ async function resolveStatus(explicitRoot: string | undefined, allowFlag: boolea
   }
 
   const canonicalRoot = await realpathFromNearestExisting(lexicalRoot);
-  // `memory.path` was screened above; anything forbidden that remains came from the
-  // workspace location, an explicit root, or a symlink target, and the canonical
-  // root is later interpolated into shell commands.
-  if (FORBIDDEN_MEMORY_PATH_CHARACTERS.test(canonicalRoot) || FORBIDDEN_MEMORY_PATH_CHARACTERS.test(workspaceRoot)) {
+  // `memory.path` was screened above with the strict set; the resolved locations are
+  // later placed inside double quotes in shell commands, so they get the narrower
+  // location set (a symlink target, directory name, or explicit root can carry them).
+  if (hasForbiddenLocationCharacter(canonicalRoot) || hasForbiddenLocationCharacter(workspaceRoot)) {
     return failure("containment");
   }
   const lexicallyInside = isContained(workspaceRoot, lexicalRoot);
@@ -956,7 +964,10 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((error: unknown) => {
-  console.error(`ERROR: ${errorMessage(error)}`);
-  process.exitCode = 1;
-});
+// Importing the bundle (tests of the pure helpers) must not run the CLI.
+if (typeof require !== "undefined" && require.main === module) {
+  void main().catch((error: unknown) => {
+    console.error(`ERROR: ${errorMessage(error)}`);
+    process.exitCode = 1;
+  });
+}

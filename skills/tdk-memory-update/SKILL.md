@@ -111,7 +111,7 @@ Ends with one line: `Result: written`, `Result: already present`, or
 
 Complete the shared preflight: run `memory-manifest.cjs resolve` as step 1 of the
 contract's section 1 (explicit `--memory-root` only if given, `--allow-external-root`
-only if the user typed it) and use the JSON `root` as `<memoryRoot>`; any `error`
+if present in this invocation's arguments, typed or forwarded) and use the JSON `root` as `<memoryRoot>`; any `error`
 STOPs, and `uninitialized` ends in `error: memory not initialised`. Before reading a
 template, invoke `/tdk-memory-init --ensure-templates --memory-root <memoryRoot>` by
 skill name, then read only `<memoryRoot>/_templates/`. Do not access another

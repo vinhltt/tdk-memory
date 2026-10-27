@@ -13,9 +13,11 @@ metadata:
 
 Load `${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-init/references/memory-root-and-asset-contract.md`
 and follow its section 1: step 1 is `resolve` (explicit `--memory-root` only if given,
-`--allow-external-root` only if the user typed it); `<memoryRoot>` is the JSON `root`
+`--allow-external-root` if present in this invocation's arguments, typed or forwarded); `<memoryRoot>` is the JSON `root`
 and any `error` STOPs with its code, except that `--fix` also accepts
-`memory-incomplete` with a non-null `root` for its recovery flow. Probe Node.js >=18.
+`memory-incomplete` with a non-null `root` for its recovery flow; without `--fix`,
+`memory-incomplete` STOPs with a message suggesting `/tdk-memory-checksum --fix`. Probe
+Node.js >=18.
 Apply read-only YAML preflight. With `--fix`, a malformed manifest enters the
 contract's dedicated diagnosis/approval/backup/temp-validation recovery path,
 not ordinary update dispatch. Without approval, perform no writes.

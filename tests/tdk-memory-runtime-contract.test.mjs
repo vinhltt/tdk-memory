@@ -13,11 +13,13 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
+const require = createRequire(import.meta.url);
 const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(TESTS_DIR, '..');
 const RUNTIME_BUNDLE = resolve(
@@ -749,6 +751,46 @@ describe('tdk memory manifest runtime resolve', () => {
         assert.equal(resolveStatus(workspace, ['--allow-external-root']).error, 'containment');
       }
     });
+  });
+
+  test('accepts workspace locations with shell-neutral punctuation such as ampersand and apostrophe', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'tdk-memory-punct-'));
+    try {
+      for (const name of ['R&D', "Tom's projects", 'a;b (c)', 'x|y <z>']) {
+        const workspace = join(sandbox, name, 'workspace');
+        mkdirSync(join(workspace, '.git'), { recursive: true });
+        assert.equal(resolveStatus(workspace).status, 'uninitialized', name);
+
+        const root = join(workspace, '.specify', 'memory');
+        mkdirSync(root, { recursive: true });
+        seedMemory(root);
+        const status = resolveStatus(workspace);
+        assert.equal(status.status, 'ready', name);
+        assert.equal(status.root, realpathSync(root));
+      }
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('screens resolved locations with a narrower set than memory.path, treating backslash by platform', () => {
+    const { hasForbiddenLocationCharacter } = require(RUNTIME_BUNDLE);
+    const posix = (value) => hasForbiddenLocationCharacter(value, 'linux');
+    const windows = (value) => hasForbiddenLocationCharacter(value, 'win32');
+
+    for (const clean of ["/home/Tom's projects/R&D", '/srv/a;b|c<d>e', 'C:/Users/me/work']) {
+      assert.equal(posix(clean), false, clean);
+      assert.equal(windows(clean), false, clean);
+    }
+    for (const dirty of ['/srv/a$b', '/srv/a`b', '/srv/a"b', '/srv/a\nb', '/srv/a\u0085b', '/srv/a\u2028b']) {
+      assert.equal(posix(dirty), true, JSON.stringify(dirty));
+      assert.equal(windows(dirty), true, JSON.stringify(dirty));
+    }
+
+    assert.equal(windows("C:\\Users\\R&D\\Tom's projects\\workspace"), false);
+    assert.equal(posix('C:\\Users\\me\\workspace'), true);
+    assert.equal(posix('/srv/back\\slash'), true);
+    assert.equal(windows('C:\\Users\\me\\$work'), true);
   });
 
   test('blocks a workspace location with shell-significant characters', () => {

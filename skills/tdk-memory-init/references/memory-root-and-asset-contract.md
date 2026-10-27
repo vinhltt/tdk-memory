@@ -21,8 +21,9 @@ node -e 'if (Number(process.versions.node.split(".")[0]) < 18) process.exit(1)' 
 node "${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" resolve [--memory-root "<explicit>"] [--allow-external-root]
 ```
 
-Pass `--memory-root` only when the user gave one, and `--allow-external-root` only
-when the user typed it in this invocation. `resolve` is the single source for the
+Pass `--memory-root` only when the user gave one, and pass `--allow-external-root`
+when it is present in this invocation's arguments, whether the user typed it or a
+parent skill forwarded it. Only write consent (section 2) tells the two apart. `resolve` is the single source for the
 root, external-root permission, and state; never re-derive any of them by comparing
 paths yourself. Read its JSON:
 
@@ -72,10 +73,14 @@ re-run by hand):
   and C1 controls (U+007F-U+009F), U+2028, U+2029, backslash, and `` ` `` `$` `"`
   `'` `;` `&` `|` `<` `>`. `memory.reader.backend` other than `file` is
   `unsupported-reader`.
-- The canonical root and the workspace root are checked against the same forbidden
-  characters after canonicalization (symlink targets, directory names, explicit
-  roots): any hit is `containment`. Rule: a hit in `memory.path` itself is
-  `config-invalid`, any other hit is `containment`.
+- The canonical root and the workspace root are checked after canonicalization
+  (symlink targets, directory names, explicit roots) against a narrower set, because
+  they are only ever placed inside double quotes: C0/C1 controls, U+2028, U+2029,
+  `` ` ``, `$`, `"`, and backslash except on Windows (where it is the path
+  separator). Any hit is `containment`. Characters such as `&`, `'`, `;`, `|`, `<`,
+  `>` are fine in a location (for example `R&D/` or `Tom's projects/`). Rule: a hit
+  in `memory.path` itself, judged by the strict set above, is `config-invalid`; a hit
+  in a resolved location, judged by the narrow set, is `containment`.
 - A root equal to the filesystem root, to the workspace, or to any ancestor of the
   workspace is `containment`, even with permission.
 - External = the root is not contained in the current workspace, both lexically and
@@ -89,9 +94,9 @@ re-run by hand):
   and containment checks passed, so initialization can create a permitted external
   root and checksum recovery can open it. Every other error leaves `root` null.
 
-Pass `<memoryRoot>` and every path to shell commands as one quoted argument; the
-canonical root has already been screened for the characters above and must never be
-interpolated unquoted. Non-init operations with no root STOP with initialization
+Pass `<memoryRoot>` and every path to shell commands as one double-quoted argument;
+the canonical root has already been screened with the location set above and must
+never be interpolated unquoted. Non-init operations with no root STOP with initialization
 guidance. Config is optional; do not ask to create it on a standalone install. Offer
 to persist a selection only when the workspace already has `.specify/` and the user
 wants it.
@@ -140,8 +145,8 @@ remaining normalized components. Do not use string-prefix checks.
    for example after context compaction, ask again. When the session cannot ask (no
    `AskUserQuestion`, as in a subagent, or the call fails) STOP with remediation
    instead of writing; only an `--allow-external-root` the user typed in this
-   invocation then allows the write. A flag forwarded because of configuration is
-   permission, never consent. Consumer skills never pass the flag on their own.
+   invocation then allows the write. A flag that a skill forwarded (because
+   `resolve` reported an external root) is permission, never consent. Consumer skills never pass the flag on their own.
    Reads need no consent.
 6. A root outside the workspace requires `memory.yaml` for every operation except
    initialization. Initialization, including `--ensure-templates` on an external
