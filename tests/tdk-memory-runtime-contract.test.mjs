@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -373,6 +374,333 @@ describe('tdk memory manifest runtime contract', () => {
       expectFatal(runRuntime(workspace, ['write', 'memory']));
       expectFatal(runRuntime(workspace, ['hash', 'memory', 'payload.bin', '--manifest', 'memory.yaml']));
       expectFatal(runRuntime(workspace, ['validate', 'memory', '--manifest', '/tmp/memory.yaml']));
+    });
+  });
+});
+
+const INDEX_WITH_COVERAGE = (coverage, domains = []) => [
+  '# Memory Index',
+  '',
+  coverage,
+  '',
+  '## Domain Map',
+  '',
+  '| Domain | Folder | Scope |',
+  '|--------|--------|-------|',
+  ...domains.map((name) => `| ${name} | [[domains/${name}/domain-overview\\|${name}/]] | scope |`),
+  '',
+  '## Data Model',
+  '',
+  '| File | Title | Updated | Binding |',
+  '|------|-------|---------|---------|',
+  '| auth-domain | not a domain row | | |',
+  '',
+].join('\n');
+
+function seedMemory(root, { coverage = 'Binding coverage: 0 of 0 typed files', domains = [], constitution = false } = {}) {
+  const index = INDEX_WITH_COVERAGE(coverage, domains);
+  writeRelative(root, 'memory-index.md', index);
+  writeRelative(root, 'memory.yaml', manifestYaml({ indexSha256: sha256(index) }));
+  if (constitution) writeRelative(root, 'constitution.md', '# Constitution\n');
+}
+
+function writeConfig(workspace, memory) {
+  writeRelative(workspace, '.specify/.specify.json', JSON.stringify(memory === undefined ? {} : { memory }));
+}
+
+function resolveStatus(workspace, args = []) {
+  const result = runRuntime(workspace, ['resolve', ...args]);
+  const status = report(result);
+  assert.equal(typeof status.memory_path, 'string', 'memory_path is present in every status');
+  assert.equal(status.reader, 'file');
+  assert.equal(status.reader_fallback, 'none');
+  return status;
+}
+
+function git(cwd, args) {
+  const result = spawnSync(
+    'git',
+    ['-c', 'user.name=tester', '-c', 'user.email=tester@example.invalid', ...args],
+    { cwd, encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+}
+
+describe('tdk memory manifest runtime resolve', () => {
+  test('reports a ready default root with coverage, domains, and constitution', () => {
+    withWorkspace((workspace) => {
+      const root = join(workspace, '.specify', 'memory');
+      mkdirSync(root, { recursive: true });
+      seedMemory(root, {
+        coverage: 'Binding coverage: 9/11 typed files',
+        domains: ['billing', 'auth'],
+        constitution: true,
+      });
+
+      const status = resolveStatus(workspace);
+      assert.deepEqual(status, {
+        status: 'ready',
+        root: realpathSync(root),
+        memory_path: '.specify/memory',
+        external: false,
+        reader: 'file',
+        reader_fallback: 'none',
+        binding_coverage: '9 of 11 typed files',
+        domains: 'billing, auth',
+        constitution: 'present',
+        warnings: [],
+        error: null,
+      });
+    });
+  });
+
+  test('normalizes unknown coverage and domain shapes without inventing zero', () => {
+    withWorkspace((workspace) => {
+      const root = join(workspace, '.specify', 'memory');
+      mkdirSync(root, { recursive: true });
+
+      seedMemory(root, { coverage: 'Binding coverage: 12 of 11 typed files' });
+      let status = resolveStatus(workspace);
+      assert.equal(status.binding_coverage, 'unknown');
+      assert.equal(status.domains, 'none');
+
+      writeRelative(root, 'memory-index.md', '# Memory Index\n\nBinding coverage: many\n');
+      status = resolveStatus(workspace);
+      assert.equal(status.status, 'ready');
+      assert.equal(status.binding_coverage, 'unknown');
+      assert.equal(status.domains, 'unknown');
+    });
+  });
+
+  test('is uninitialized with no root, and with an empty default candidate', () => {
+    withWorkspace((workspace) => {
+      let status = resolveStatus(workspace);
+      assert.equal(status.status, 'uninitialized');
+      assert.equal(status.binding_coverage, 'n/a');
+      assert.equal(status.domains, 'n/a');
+      assert.equal(status.external, false);
+
+      mkdirSync(join(workspace, 'memory'));
+      status = resolveStatus(workspace);
+      assert.equal(status.status, 'uninitialized');
+      assert.equal(status.root, join(realpathSync(workspace), 'memory'));
+    });
+  });
+
+  test('treats a dot-dot-prefixed folder name as internal and keeps tilde literal', () => {
+    withWorkspace((workspace) => {
+      mkdirSync(join(workspace, '..mem'));
+      writeConfig(workspace, { path: '..mem' });
+      let status = resolveStatus(workspace);
+      assert.equal(status.status, 'uninitialized');
+      assert.equal(status.external, false);
+      assert.equal(status.root, join(realpathSync(workspace), '..mem'));
+
+      mkdirSync(join(workspace, '~', 'x'), { recursive: true });
+      writeConfig(workspace, { path: '~/x' });
+      status = resolveStatus(workspace);
+      assert.equal(status.external, false);
+      assert.equal(status.root, join(realpathSync(workspace), '~', 'x'));
+    });
+  });
+
+  test('rejects non-boolean allowExternal and shell-significant path characters as config-invalid', () => {
+    withWorkspace((workspace) => {
+      writeConfig(workspace, { path: 'docs/brain', allowExternal: 'true' });
+      let status = resolveStatus(workspace);
+      assert.equal(status.status, 'error');
+      assert.equal(status.error, 'config-invalid');
+      assert.equal(status.root, null);
+      assert.equal(status.memory_path, 'docs/brain');
+
+      for (const path of ['a;b', 'a$(x)', 'a`x`', 'a"b', "a'b", 'a|b', 'a&b', 'a<b', 'a>b', 'a\nb']) {
+        writeConfig(workspace, { path });
+        status = resolveStatus(workspace);
+        assert.equal(status.error, 'config-invalid', JSON.stringify(path));
+        assert.doesNotMatch(status.memory_path, /[`$"';&|<>\n]/);
+        assert.match(status.memory_path, /\?/);
+      }
+
+      writeRelative(workspace, '.specify/.specify.json', '{ not json');
+      status = resolveStatus(workspace);
+      assert.equal(status.error, 'config-invalid');
+      assert.equal(status.memory_path, '.specify/memory');
+    });
+  });
+
+  test('classifies a missing configured root, an incomplete root, and ambiguous defaults', () => {
+    withWorkspace((workspace) => {
+      writeConfig(workspace, { path: 'nope' });
+      let status = resolveStatus(workspace);
+      assert.equal(status.status, 'error');
+      assert.equal(status.error, 'root-missing');
+      assert.equal(status.memory_path, 'nope');
+      assert.equal(status.root, null);
+
+      const root = join(workspace, 'nope');
+      mkdirSync(root);
+      writeRelative(root, 'memory-index.md', INDEX_WITH_COVERAGE('Binding coverage: 0 of 0 typed files'));
+      status = resolveStatus(workspace);
+      assert.equal(status.error, 'memory-incomplete');
+      assert.equal(status.status, 'error');
+
+      rmSync(join(workspace, '.specify'), { recursive: true });
+      mkdirSync(join(workspace, '.specify', 'memory'), { recursive: true });
+      mkdirSync(join(workspace, 'memory'));
+      status = resolveStatus(workspace);
+      assert.equal(status.error, 'ambiguous-default');
+      assert.equal(status.memory_path, '.specify/memory');
+    });
+  });
+
+  test('requires permission for an external root and ties config permission to memory.path', () => {
+    withWorkspace((workspace) => {
+      const external = makeMemoryRoot(dirname(workspace), 'ext-memory');
+      seedMemory(external);
+
+      writeConfig(workspace, { path: '../ext-memory' });
+      let status = resolveStatus(workspace);
+      assert.equal(status.error, 'external-not-allowed');
+      assert.equal(status.memory_path, '../ext-memory');
+      assert.equal(status.root, null);
+      assert.equal(status.external, false);
+
+      status = resolveStatus(workspace, ['--allow-external-root']);
+      assert.equal(status.status, 'ready');
+      assert.equal(status.external, true);
+      assert.equal(status.root, realpathSync(external));
+
+      writeConfig(workspace, { path: '../ext-memory', allowExternal: false });
+      assert.equal(resolveStatus(workspace).error, 'external-not-allowed');
+
+      writeConfig(workspace, { path: '../ext-memory', allowExternal: true });
+      status = resolveStatus(workspace);
+      assert.equal(status.status, 'ready');
+      assert.equal(status.external, true);
+      assert.equal(status.root, realpathSync(external));
+      assert.deepEqual(status.warnings, []);
+
+      // allowExternal without memory.path grants nothing to an explicit root.
+      writeConfig(workspace, { allowExternal: true });
+      assert.equal(resolveStatus(workspace, ['--memory-root', '../ext-memory']).error, 'external-not-allowed');
+    });
+  });
+
+  test('denies an explicit external root that differs from memory.path unless the flag is given', () => {
+    withWorkspace((workspace) => {
+      const configured = makeMemoryRoot(dirname(workspace), 'configured-memory');
+      const other = makeMemoryRoot(dirname(workspace), 'other-memory');
+      seedMemory(configured);
+      seedMemory(other);
+      writeConfig(workspace, { path: '../configured-memory', allowExternal: true });
+
+      let status = resolveStatus(workspace, ['--memory-root', '../other-memory']);
+      assert.equal(status.error, 'external-not-allowed');
+      assert.equal(status.memory_path, '../configured-memory');
+
+      status = resolveStatus(workspace, ['--memory-root', '../other-memory', '--allow-external-root']);
+      assert.equal(status.status, 'ready');
+      assert.equal(status.root, realpathSync(other));
+
+      status = resolveStatus(workspace, ['--memory-root', configured]);
+      assert.equal(status.status, 'ready');
+      assert.equal(status.root, realpathSync(configured));
+    });
+  });
+
+  test('warns about an absolute memory.path and a legacy constitution left behind', () => {
+    withWorkspace((workspace) => {
+      const external = makeMemoryRoot(dirname(workspace), 'abs-memory');
+      seedMemory(external);
+      writeRelative(workspace, '.specify/memory/constitution.md', '# Legacy constitution\n');
+      writeConfig(workspace, { path: realpathSync(external), allowExternal: true });
+
+      const status = resolveStatus(workspace);
+      assert.equal(status.status, 'ready');
+      assert.deepEqual(status.warnings, ['absolute-path', 'legacy-constitution']);
+      assert.equal(status.constitution, 'absent');
+    });
+  });
+
+  test('blocks a symlinked root that escapes the workspace unless it is the permitted memory.path', () => {
+    withWorkspace((workspace) => {
+      const external = makeMemoryRoot(dirname(workspace), 'link-target');
+      seedMemory(external);
+      symlinkSync(external, join(workspace, 'root-link'));
+
+      writeConfig(workspace, { path: 'root-link' });
+      let status = resolveStatus(workspace);
+      assert.equal(status.status, 'error');
+      assert.equal(status.error, 'containment');
+
+      writeConfig(workspace, { path: 'root-link', allowExternal: true });
+      status = resolveStatus(workspace);
+      assert.equal(status.status, 'ready');
+      assert.equal(status.external, true);
+      assert.equal(status.root, realpathSync(external));
+    });
+  });
+
+  test('rejects an unsupported reader backend', () => {
+    withWorkspace((workspace) => {
+      writeConfig(workspace, { reader: { backend: 'obsidian-cli' } });
+      const status = resolveStatus(workspace);
+      assert.equal(status.status, 'error');
+      assert.equal(status.error, 'unsupported-reader');
+
+      writeConfig(workspace, { reader: { backend: 'file' } });
+      assert.equal(resolveStatus(workspace).status, 'uninitialized');
+    });
+  });
+
+  test('resolves a relative memory.path that leaves the repository from the main worktree', (context) => {
+    const probe = spawnSync('git', ['--version'], { encoding: 'utf8' });
+    if (probe.status !== 0) {
+      context.skip('git is not available');
+      return;
+    }
+
+    const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'tdk-memory-worktree-')));
+    try {
+      const main = join(sandbox, 'main');
+      mkdirSync(main);
+      git(main, ['init', '-q']);
+      git(main, ['commit', '-q', '--allow-empty', '-m', 'init']);
+      const linked = join(sandbox, 'deep', 'er', 'linked');
+      git(main, ['worktree', 'add', '-q', linked, '-b', 'feature']);
+
+      const external = makeMemoryRoot(sandbox, 'team-memory');
+      seedMemory(external);
+      writeConfig(linked, { path: '../team-memory', allowExternal: true });
+      const outside = resolveStatus(linked);
+      assert.equal(outside.status, 'ready');
+      assert.equal(outside.root, external);
+      assert.equal(outside.external, true);
+
+      // From the main worktree the same configuration reaches the same root.
+      writeConfig(main, { path: '../team-memory', allowExternal: true });
+      assert.equal(resolveStatus(main).root, external);
+
+      // A relative path that stays inside the repository keeps using the linked worktree.
+      const internal = join(linked, 'docs', 'brain');
+      mkdirSync(internal, { recursive: true });
+      seedMemory(internal);
+      writeConfig(linked, { path: 'docs/brain' });
+      const inside = resolveStatus(linked);
+      assert.equal(inside.status, 'ready');
+      assert.equal(inside.root, internal);
+      assert.equal(inside.external, false);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the documented resolve flag surface strict', () => {
+    withWorkspace((workspace) => {
+      expectFatal(runRuntime(workspace, ['resolve', '--allow-external-root', '--allow-external-root']));
+      expectFatal(runRuntime(workspace, ['resolve', '--memory-root']));
+      expectFatal(runRuntime(workspace, ['resolve', 'positional']));
+      expectFatal(runRuntime(workspace, ['resolve', '--manifest', 'memory.yaml']));
     });
   });
 });
