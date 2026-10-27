@@ -165,9 +165,8 @@ Follow `references/domain-source-extraction-flow.md`.
 ## Step 3: Read template
 
 Invoke `/tdk-memory-init --ensure-templates --memory-root <memoryRoot>` by name.
-Append `--allow-external-root` whenever external-root permission was established for
-this operation (the flag in this invocation, or `allowExternal` bound to `memory.path`
-per the shared contract) and carry it to every hash/validate call. An external root
+Append `--allow-external-root` when `resolve` reported `external: true` with a root
+(contract section 1) and carry it to every hash/validate call. An external root
 also needs the once-per-session write consent from the contract before the first
 write; afterwards remind the user to commit inside the memory repository.
 `Read("<memoryRoot>/_templates/{type}-template.md.tpl")` based on content type.

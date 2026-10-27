@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  existsSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -450,6 +451,7 @@ describe('tdk memory manifest runtime resolve', () => {
         constitution: 'present',
         warnings: [],
         error: null,
+        hint: null,
       });
     });
   });
@@ -535,7 +537,7 @@ describe('tdk memory manifest runtime resolve', () => {
       assert.equal(status.status, 'error');
       assert.equal(status.error, 'root-missing');
       assert.equal(status.memory_path, 'nope');
-      assert.equal(status.root, null);
+      assert.equal(status.root, join(realpathSync(workspace), 'nope'));
 
       const root = join(workspace, 'nope');
       mkdirSync(root);
@@ -543,6 +545,7 @@ describe('tdk memory manifest runtime resolve', () => {
       status = resolveStatus(workspace);
       assert.equal(status.error, 'memory-incomplete');
       assert.equal(status.status, 'error');
+      assert.equal(status.root, join(realpathSync(workspace), 'nope'));
 
       rmSync(join(workspace, '.specify'), { recursive: true });
       mkdirSync(join(workspace, '.specify', 'memory'), { recursive: true });
@@ -563,7 +566,8 @@ describe('tdk memory manifest runtime resolve', () => {
       assert.equal(status.error, 'external-not-allowed');
       assert.equal(status.memory_path, '../ext-memory');
       assert.equal(status.root, null);
-      assert.equal(status.external, false);
+      assert.equal(status.external, true);
+      assert.equal(status.hint, 'enable-allow-external');
 
       status = resolveStatus(workspace, ['--allow-external-root']);
       assert.equal(status.status, 'ready');
@@ -597,6 +601,8 @@ describe('tdk memory manifest runtime resolve', () => {
       let status = resolveStatus(workspace, ['--memory-root', '../other-memory']);
       assert.equal(status.error, 'external-not-allowed');
       assert.equal(status.memory_path, '../configured-memory');
+      assert.equal(status.external, true);
+      assert.equal(status.hint, 'explicit-root-differs');
 
       status = resolveStatus(workspace, ['--memory-root', '../other-memory', '--allow-external-root']);
       assert.equal(status.status, 'ready');
@@ -650,6 +656,11 @@ describe('tdk memory manifest runtime resolve', () => {
 
       writeConfig(workspace, { reader: { backend: 'file' } });
       assert.equal(resolveStatus(workspace).status, 'uninitialized');
+
+      for (const reader of ['file', 5, null, ['file']]) {
+        writeConfig(workspace, { reader });
+        assert.equal(resolveStatus(workspace).error, 'config-invalid', JSON.stringify(reader));
+      }
     });
   });
 
@@ -693,6 +704,130 @@ describe('tdk memory manifest runtime resolve', () => {
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
+  });
+
+  test('rejects empty paths, a null memory block, and an empty explicit root', () => {
+    withWorkspace((workspace) => {
+      for (const path of ['', '   ', 5, null]) {
+        writeConfig(workspace, { path });
+        const status = resolveStatus(workspace);
+        assert.equal(status.error, 'config-invalid', JSON.stringify(path));
+        assert.equal(status.memory_path, '.specify/memory');
+      }
+
+      writeRelative(workspace, '.specify/.specify.json', JSON.stringify({ memory: null }));
+      assert.equal(resolveStatus(workspace).error, 'config-invalid');
+
+      writeConfig(workspace, undefined);
+      assert.equal(resolveStatus(workspace, ['--memory-root', '']).error, 'config-invalid');
+      assert.equal(resolveStatus(workspace, ['--memory-root', '  ']).error, 'config-invalid');
+    });
+  });
+
+  test('rejects backslash, C1 controls, and line separators in memory.path', () => {
+    withWorkspace((workspace) => {
+      for (const path of ['a\\b', 'a\u0085b', 'a\u009fb', 'a b', 'a b']) {
+        writeConfig(workspace, { path });
+        const status = resolveStatus(workspace);
+        assert.equal(status.error, 'config-invalid', JSON.stringify(path));
+        assert.equal(status.memory_path, 'a?b');
+      }
+    });
+  });
+
+  test('blocks a canonical root whose real path carries shell-significant characters', () => {
+    withWorkspace((workspace) => {
+      for (const [index, name] of ['we$ird', 'new\nline', 'back\\slash'].entries()) {
+        const target = makeMemoryRoot(dirname(workspace), name);
+        seedMemory(target);
+        symlinkSync(target, join(workspace, `link-${index}`));
+        writeConfig(workspace, { path: `link-${index}`, allowExternal: true });
+        const status = resolveStatus(workspace);
+        assert.equal(status.status, 'error', JSON.stringify(name));
+        assert.equal(status.error, 'containment', JSON.stringify(name));
+        assert.equal(status.root, null);
+        assert.equal(resolveStatus(workspace, ['--allow-external-root']).error, 'containment');
+      }
+    });
+  });
+
+  test('blocks a workspace location with shell-significant characters', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'tdk-memory-weird-'));
+    try {
+      const workspace = join(sandbox, 'work$space');
+      mkdirSync(join(workspace, '.git'), { recursive: true });
+      assert.equal(resolveStatus(workspace).error, 'containment');
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses a root equal to or above the workspace even with permission', () => {
+    withWorkspace((workspace) => {
+      writeConfig(workspace, { path: '..', allowExternal: true });
+      let status = resolveStatus(workspace);
+      assert.equal(status.error, 'containment');
+      assert.equal(status.root, null);
+      assert.equal(status.external, true);
+
+      status = resolveStatus(workspace, ['--memory-root', '/', '--allow-external-root']);
+      assert.equal(status.error, 'containment');
+
+      writeConfig(workspace, { path: '.' });
+      assert.equal(resolveStatus(workspace).error, 'containment');
+    });
+  });
+
+  test('reports the session root for a permitted root that does not exist yet', () => {
+    withWorkspace((workspace) => {
+      const future = join(dirname(workspace), 'future-memory');
+      writeConfig(workspace, { path: '../future-memory', allowExternal: true });
+      let status = resolveStatus(workspace);
+      assert.equal(status.status, 'error');
+      assert.equal(status.error, 'root-missing');
+      assert.equal(status.external, true);
+      assert.equal(status.root, join(realpathSync(dirname(workspace)), 'future-memory'));
+      assert.equal(status.memory_path, '../future-memory');
+
+      writeConfig(workspace, { path: '../future-memory' });
+      status = resolveStatus(workspace);
+      assert.equal(status.error, 'external-not-allowed');
+      assert.equal(status.root, null);
+
+      writeConfig(workspace, { path: 'inner-future' });
+      status = resolveStatus(workspace);
+      assert.equal(status.error, 'root-missing');
+      assert.equal(status.external, false);
+      assert.equal(status.root, join(realpathSync(workspace), 'inner-future'));
+      assert.equal(existsSync(future), false, 'resolve never creates the root');
+    });
+  });
+
+  test('treats a Domain Map whose rows name no domain as unknown, not none', () => {
+    withWorkspace((workspace) => {
+      const root = join(workspace, '.specify', 'memory');
+      mkdirSync(root, { recursive: true });
+      const index = [
+        '# Memory Index',
+        '',
+        'Binding coverage: 0 of 0 typed files',
+        '',
+        '## Domain Map',
+        '',
+        '| Domain | Folder | Scope |',
+        '|--------|--------|-------|',
+        '| Not A Domain | x | y |',
+        '',
+      ].join('\n');
+      writeRelative(root, 'memory-index.md', index);
+      writeRelative(root, 'memory.yaml', manifestYaml({ indexSha256: sha256(index) }));
+      assert.equal(resolveStatus(workspace).domains, 'unknown');
+
+      const placeholder = index.replace('| Not A Domain | x | y |', '| _(none yet)_ | | |');
+      writeRelative(root, 'memory-index.md', placeholder);
+      writeRelative(root, 'memory.yaml', manifestYaml({ indexSha256: sha256(placeholder) }));
+      assert.equal(resolveStatus(workspace).domains, 'none');
+    });
   });
 
   test('keeps the documented resolve flag surface strict', () => {

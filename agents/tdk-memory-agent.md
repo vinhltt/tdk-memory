@@ -44,15 +44,20 @@ reads. Pass the selected root explicitly to every query invocation. Use only
 file tools and the read-only shipped Node.js runtime. Asset and deprecated paths
 are excluded from evidence nomination, coverage, and index inventories.
 
-Before any read, check `memory_root` once with
+Before any read, check `memory_root` once. First reject it as a configuration error
+if it is blank or contains a control character (including C1 controls, U+2028,
+U+2029), a backslash, or any of `` ` `` `$` `"` `'` `;` `&` `|` `<` `>`: never put
+such a value into a command. Otherwise run, with the value as one quoted argument,
 `node "<plugin root>/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" resolve --memory-root "<memory_root>"`
 and never add `--allow-external-root`. A root outside the workspace is accepted only
 when `memory.allowExternal` binds it to `memory.path`, which the runtime applies;
 an external root that exists only because a caller flag allowed it is refused.
-Treat a JSON `error` of `external-not-allowed`, `containment`, `config-invalid`, or
-`unsupported-reader` as a configuration error: stop, read nothing, emit no success,
-and show the code with `memory.path` as configured (never an absolute path). Other
-states, including `uninitialized`, keep the existing guards below.
+If `resolve` exits nonzero or prints no JSON, refuse: configuration error, read
+nothing, emit no success. Treat a JSON `error` of `external-not-allowed`,
+`containment`, `config-invalid`, or `unsupported-reader` the same way, showing the
+code with `memory.path` as configured (never an absolute path). Other states,
+including `uninitialized`, keep the existing guards below. When `root` is non-null
+use it as `<memoryRoot>` for all reads.
 
 ## Security
 

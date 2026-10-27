@@ -109,16 +109,20 @@ Ends with one line: `Result: written`, `Result: already present`, or
 
 ### Setup
 
-Complete the shared preflight. Before reading a template, invoke
-`/tdk-memory-init --ensure-templates --memory-root <memoryRoot>` by skill name,
-then read only `<memoryRoot>/_templates/`. Do not access another plugin's files.
-Resolve external-root permission once for this operation (the contract: the flag in
-this invocation, or `memory.allowExternal: true` for the root `memory.path` names)
-and forward `--allow-external-root` to this nested invocation and to every runtime
-call whenever permission exists. Permission is not consent to write: the first
-write to an external root in a session is confirmed once (contract section 2),
-for every mode including `--deprecate`, `--finalize-written` and the preconfirmed
-candidate. When the session cannot ask, STOP with no write (a candidate ends with
+Complete the shared preflight: run `memory-manifest.cjs resolve` as step 1 of the
+contract's section 1 (explicit `--memory-root` only if given, `--allow-external-root`
+only if the user typed it) and use the JSON `root` as `<memoryRoot>`; any `error`
+STOPs, and `uninitialized` ends in `error: memory not initialised`. Before reading a
+template, invoke `/tdk-memory-init --ensure-templates --memory-root <memoryRoot>` by
+skill name, then read only `<memoryRoot>/_templates/`. Do not access another
+plugin's files. When `resolve` reports `external: true` with a root, forward
+`--allow-external-root` to that nested invocation and to every runtime call.
+Permission is not consent: the first write to an external root in a session is
+confirmed once by the session running this skill (contract section 2), for every mode
+including `--deprecate`, `--finalize-written` and the preconfirmed candidate. A
+caller that runs this skill inline from the main session (for example an ingest loop)
+can ask; a subagent context without `AskUserQuestion` cannot, so it STOPs with no
+write (a candidate ends with
 `Result: error: external-root-consent-required — <memory.path as configured>`).
 After writing to an external root, remind the user to commit inside the memory
 repository; never run git here.

@@ -25,6 +25,7 @@ const querySkill = read('skills/tdk-memory-query/SKILL.md');
 const contract = read('skills/tdk-memory-init/references/memory-root-and-asset-contract.md');
 const agent = read('agents/tdk-memory-agent.md');
 const readme = read('README.md');
+const flat = (text) => text.replace(/\s+/g, ' ');
 
 describe('status handshake', () => {
   test('defines the block fields once, in a fixed order', () => {
@@ -91,11 +92,30 @@ describe('status handshake', () => {
 });
 
 describe('external root contract', () => {
-  test('grants permission by flag or by allowExternal bound to memory.path', () => {
-    assert.match(contract, /1\. `--allow-external-root` supplied in this invocation; or/);
-    assert.match(contract, /2\. `memory\.allowExternal: true` in `\.specify\/\.specify\.json` \*\*and\*\* the canonical\s+root equals the canonical root of `memory\.path`/);
-    assert.match(contract, /explicit `--memory-root` that points to an external root other than `memory\.path`\s+always needs the flag/);
-    assert.match(contract, /`external-not-allowed — <memory\.path as configured>`/);
+  test('makes resolve the single source for root and permission', () => {
+    assert.match(contract, /\*\*Step 1 of every operation\*\*/);
+    assert.match(contract, /`<memoryRoot>` is the JSON `root`/);
+    assert.match(contract, /never re-derive any of them by comparing\s+paths yourself/);
+    assert.match(contract, /External-root permission is present when `external` is `true` and `root` is\s+non-null/);
+    assert.match(contract, /`error` is `root-missing` with a non-null `root`: only initialization accepts it/);
+    assert.match(contract, /`error` is `memory-incomplete` with a non-null `root`: only `checksum --fix`/);
+    assert.match(contract, /`external-not-allowed — <memory\.path as configured>`|STOP with `<code> — <memory\.path as configured>`/);
+  });
+
+  test('documents the permission rule resolve implements, with distinct remediation hints', () => {
+    assert.match(contract, /`--allow-external-root`, or\s+`memory\.allowExternal: true` with a canonical root equal to the canonical root of\s+`memory\.path`/);
+    assert.match(contract, /explicit `--memory-root` naming another external root needs the\s+flag/);
+    assert.match(contract, /`enable-allow-external`/);
+    assert.match(contract, /`explicit-root-differs`/);
+    assert.match(contract, /Do not|never re-derive/);
+    assert.match(handshake, /Do not suggest enabling what is already enabled/);
+  });
+
+  test('states that a forwarded flag is permission and never consent', () => {
+    assert.match(contract, /\*\*Permission is not consent\.\*\*/);
+    assert.match(contract, /A flag forwarded because of configuration is\s+permission, never consent/);
+    assert.match(contract, /a skill called inline by another skill/);
+    assert.match(contract, /no\s+`AskUserQuestion`, as in a subagent/);
   });
 
   test('no longer claims permission is never inferred from configuration', () => {
@@ -109,19 +129,22 @@ describe('external root contract', () => {
 
   test('confirms the first write per session and treats ensure-templates on an uninitialized root as init', () => {
     assert.match(contract, /first write to an external root in a\s+session/);
-    assert.match(contract, /confirmed once by\s+the main session/);
-    assert.match(contract, /if\s+unsure it was already asked, for example after context compaction, ask again/);
-    assert.match(contract, /STOP with\s+remediation instead of writing/);
+    assert.match(contract, /confirmed once by\s+the session that is running the skill/);
+    assert.match(flat(contract), /if unsure it was already asked, for example after context compaction, ask again/);
+    assert.match(flat(contract), /STOP with remediation\s+instead of writing/);
     assert.match(contract, /requires `memory\.yaml` for every operation except\s+initialization/);
     assert.match(contract, /including `--ensure-templates` on an external\s+root that is not yet initialized, always confirms first/);
     assert.match(read('skills/tdk-memory-init/references/ensure-template-set.md'), /this run is an initialization/);
-    assert.match(read('skills/tdk-memory-init/SKILL.md'), /Initialization of an external root is\s+always confirmed first/);
+    assert.match(flat(read('skills/tdk-memory-init/SKILL.md')), /Initialization of an external\s+root is always confirmed first/);
   });
 
   test('defines the forwarding rule, validation, worktree base, and portable evidence', () => {
-    assert.match(contract, /\*\*Forwarding\.\*\*[\s\S]*appends\s+`--allow-external-root` whenever permission was established by either source/);
-    assert.match(contract, /control\s+character, newline, or any of/);
-    assert.match(contract, /`~` is a literal path segment/);
+    assert.match(flat(contract), /Append `--allow-external-root` to every later runtime `hash\|validate\|resolve` call of the operation in that case, and only then/);
+    assert.match(contract, /C0 controls \(U\+0000-U\+001F\), DEL\s+and C1 controls \(U\+007F-U\+009F\), U\+2028, U\+2029, backslash/);
+    assert.match(contract, /`~` is a literal segment/);
+    assert.match(contract, /equal to the filesystem root, to the workspace, or to any ancestor of the\s+workspace is `containment`/);
+    assert.match(contract, /sub-workspace that has its own\s+`\.specify\/` below the repository's `\.git`/);
+    assert.match(contract, /rule: a hit in `memory\.path` itself is\s+`config-invalid`, any other hit is `containment`/i);
     assert.match(contract, /git worktree list --porcelain/);
     assert.match(contract, /relative to the memory root \(no `\.\.`, no absolute\s+path/);
     assert.match(contract, /Do not use string-prefix checks/);
@@ -157,9 +180,25 @@ describe('external root contract', () => {
     ]) {
       assert.match(read(path), /--allow-external-root/, path);
     }
-    assert.match(read('skills/tdk-memory-update/SKILL.md'), /forward `--allow-external-root` to this nested invocation and to every runtime\s+call whenever permission exists/);
+    assert.match(read('skills/tdk-memory-update/SKILL.md'), /forward\s+`--allow-external-root` to that nested invocation and to every runtime call/);
+    assert.match(read('skills/tdk-memory-update/SKILL.md'), /subagent context without `AskUserQuestion` cannot/);
     assert.match(read('skills/tdk-memory-update/SKILL.md'), /preconfirmed\s+candidate/);
     assert.match(read('skills/tdk-memory-update/SKILL.md'), /external-root-consent-required/);
+  });
+
+  test('every skill delegates root and permission to resolve', () => {
+    for (const path of [
+      'skills/tdk-memory-init/SKILL.md',
+      'skills/tdk-memory-update/SKILL.md',
+      'skills/tdk-memory-checksum/SKILL.md',
+      'skills/tdk-memory-changelog/SKILL.md',
+      'skills/tdk-memory-query/SKILL.md',
+    ]) {
+      const text = read(path);
+      assert.match(text, /`?(memory-manifest\.cjs )?resolve`?/, path);
+      assert.match(text, /JSON `root`/, path);
+      assert.doesNotMatch(text, /for the root `memory\.path` names|canonical (root|path) equal/, path);
+    }
   });
 
   test('changelog uses the memory repository for an external root', () => {
@@ -178,8 +217,10 @@ describe('agent control block', () => {
     assert.match(agent, /any value\s+other than `file` is a configuration error/);
     assert.match(agent, /only when the caller\s+supplied the field/);
     assert.match(agent, /memory-manifest\.cjs" resolve --memory-root "<memory_root>"`/);
+    assert.match(agent, /reject it as a configuration error\s+if it is blank or contains a control character/);
+    assert.match(agent, /If `resolve` exits nonzero or prints no JSON, refuse/);
     assert.match(agent, /never add `--allow-external-root`/);
-    assert.match(agent, /`external-not-allowed`, `containment`, `config-invalid`, or\s+`unsupported-reader`/);
+    assert.match(flat(agent), /`external-not-allowed`, `containment`, `config-invalid`, or `unsupported-reader`/);
   });
 });
 

@@ -7051,7 +7051,7 @@ var FALLBACK_MEMORY_PATH = "memory";
 var CONSTITUTION_PATH = "constitution.md";
 var MAX_CONFIG_BYTES = 1048576;
 var MAX_INDEX_BYTES = 4194304;
-var FORBIDDEN_MEMORY_PATH_CHARACTERS = /[\u0000-\u001f\u007f`$"';&|<>]/;
+var FORBIDDEN_MEMORY_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\`$"';&|<>]/;
 var COVERAGE_PATTERN = /^Binding coverage: (\d+)(?: of |\/)(\d+) typed files[ \t\r]*$/m;
 var DOMAIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 var SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -7727,6 +7727,7 @@ function parseDomainMap(indexSource) {
   if (headingIndex < 0)
     return "unknown";
   const domains = [];
+  let rowCount = 0;
   let inRows = false;
   for (const line of lines.slice(headingIndex + 1)) {
     if (line.startsWith("#"))
@@ -7739,10 +7740,15 @@ function parseDomainMap(indexSource) {
       continue;
     }
     const name = (trimmed.slice(1).split("|")[0] ?? "").trim().replace(/^`|`$/g, "");
+    if (name.startsWith("_("))
+      continue;
+    rowCount += 1;
     if (DOMAIN_NAME_PATTERN.test(name) && !domains.includes(name))
       domains.push(name);
   }
-  return domains.length === 0 ? "none" : domains.join(", ");
+  if (domains.length > 0)
+    return domains.join(", ");
+  return rowCount === 0 ? "none" : "unknown";
 }
 async function isRegularFileBelow(root, relativePath) {
   try {
@@ -7769,13 +7775,16 @@ async function resolveStatus(explicitRoot, allowFlag) {
     domains: "n/a",
     constitution: "absent",
     warnings,
-    error: null
+    error: null,
+    hint: null
   };
-  const failure = (code) => ({ ...base, error: code });
+  const failure = (code, extra = {}) => ({ ...base, ...extra, error: code });
   if (config.invalid)
     return failure("config-invalid");
   if (config.readerBackend !== undefined && config.readerBackend !== "file")
     return failure("unsupported-reader");
+  if (explicitRoot !== undefined && explicitRoot.trim().length === 0)
+    return failure("config-invalid");
   let lexicalRoot;
   let freshInitRoot = false;
   if (explicitRoot !== undefined) {
@@ -7800,19 +7809,29 @@ async function resolveStatus(explicitRoot, allowFlag) {
     }
   }
   const canonicalRoot = await realpathFromNearestExisting(lexicalRoot);
+  if (FORBIDDEN_MEMORY_PATH_CHARACTERS.test(canonicalRoot) || FORBIDDEN_MEMORY_PATH_CHARACTERS.test(workspaceRoot)) {
+    return failure("containment");
+  }
   const lexicallyInside = isContained(workspaceRoot, lexicalRoot);
   const external = !(lexicallyInside && isContained(workspaceRoot, canonicalRoot));
+  if (isContained(canonicalRoot, workspaceRoot))
+    return failure("containment", { external });
   if (external && !allowFlag) {
     let permittedByConfig = false;
     if (config.allowExternal && configuredPath !== undefined) {
       const configCanonical = await realpathFromNearestExisting(await configuredRootPath(workspaceRoot, configuredPath));
       permittedByConfig = configCanonical === canonicalRoot;
     }
-    if (!permittedByConfig)
-      return failure(lexicallyInside ? "containment" : "external-not-allowed");
+    if (!permittedByConfig) {
+      if (lexicallyInside)
+        return failure("containment", { external });
+      const hint = config.allowExternal && configuredPath !== undefined ? "explicit-root-differs" : "enable-allow-external";
+      return failure("external-not-allowed", { external, hint });
+    }
   }
-  if (!freshInitRoot && !await isDirectory(lexicalRoot))
-    return failure("root-missing");
+  if (!freshInitRoot && !await isDirectory(lexicalRoot)) {
+    return failure("root-missing", { root: canonicalRoot, external });
+  }
   const result = { ...base, root: canonicalRoot, external };
   const legacyRoot = await realpathFromNearestExisting(import_node_path.join(workspaceRoot, ...DEFAULT_MEMORY_PATH.split("/")));
   if (await isRegularFileBelow(canonicalRoot, CONSTITUTION_PATH))
@@ -7829,13 +7848,13 @@ async function resolveStatus(explicitRoot, allowFlag) {
     hasManifest = (await inspectContainedTarget(canonicalRoot, DEFAULT_MANIFEST_PATH, "memory manifest")).kind === "file";
   } catch (error) {
     if (error instanceof CliError)
-      return { ...failure("containment"), warnings: result.warnings };
+      return failure("containment", { external, warnings: result.warnings });
     throw error;
   }
   if (!hasIndex && !hasManifest)
     return { ...result, status: "uninitialized" };
   if (hasIndex !== hasManifest)
-    return { ...failure("memory-incomplete"), warnings: result.warnings };
+    return failure("memory-incomplete", { root: canonicalRoot, external, warnings: result.warnings });
   const indexSource = await readContainedText(canonicalRoot, INDEX_PATH, MAX_INDEX_BYTES);
   return {
     ...result,

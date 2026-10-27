@@ -13,13 +13,14 @@ metadata:
 
 Before reading staged paths or writing anything, load
 `${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-init/references/memory-root-and-asset-contract.md`.
-Resolve `<memoryRoot>`, enforce both containment layers, and complete Node/YAML
-preflight. Preserve `templates[]`; template assets are not knowledge changes.
-Resolve external-root permission once (the flag in this invocation, or
-`memory.allowExternal` for the root `memory.path` names) and forward
-`--allow-external-root` to every runtime call when it exists. Writing the CHANGELOG
-and receipts to an external root needs the contract's once-per-session write
-consent first.
+Follow its section 1: step 1 is `memory-manifest.cjs resolve` (explicit `--memory-root`
+only if given, `--allow-external-root` only if the user typed it); `<memoryRoot>` is
+the JSON `root` and any `error` STOPs with its code. Complete Node/YAML preflight.
+Preserve `templates[]`; template assets are not knowledge changes. When `resolve`
+reports `external: true` with a root, forward `--allow-external-root` to every
+runtime call. Writing the CHANGELOG and receipts to an external root needs the
+contract's once-per-session write consent first, asked by the session running this
+skill.
 Flat installation: without a plugin root, resolve the contract through sibling
 `../tdk-memory-init/references/memory-root-and-asset-contract.md` from this SKILL.md.
 

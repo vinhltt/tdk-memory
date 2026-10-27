@@ -7,7 +7,8 @@ domains, calls force-reinit, deletes domains, or changes existing knowledge.
 
 ## Preflight
 
-1. Resolve the root, canonicalize every destination, probe Node.js >=18, and run
+1. Run `resolve` (contract section 1; `root-missing` with a root is acceptable here),
+   canonicalize every destination, probe Node.js >=18, and run
    YAML preflight before writing. STOP on malformed existing memory.yaml. On a root
    outside the workspace that has no `memory.yaml`, this run is an initialization:
    confirm once with `AskUserQuestion` (state `memory.path` as configured and the

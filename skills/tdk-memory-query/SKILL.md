@@ -47,13 +47,14 @@ spawns no agent.
 ## Memory root resolution
 
 Before dispatch, load
-`${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-init/references/memory-root-and-asset-contract.md`.
-Resolve `<memoryRoot>`, enforce both containment layers, and run read-only YAML
-preflight using the shipped Node.js runtime. For a root outside the workspace,
-apply the contract's permission rule: `--allow-external-root` in this invocation,
-or `memory.allowExternal: true` when the root is the one `memory.path` names; forward
-`--allow-external-root` to every runtime call when permission exists. Never change a
-manifest during query.
+`${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-init/references/memory-root-and-asset-contract.md`
+and follow its section 1: step 1 is `memory-manifest.cjs resolve` (`--memory-root` only
+if the caller gave one, `--allow-external-root` only if the user typed it).
+`<memoryRoot>` is the JSON `root`; any `error` STOPs with its code, and
+`uninitialized` STOPs with initialization guidance. Then enforce both containment
+layers and run read-only YAML preflight using the shipped Node.js runtime. When
+`resolve` reports `external: true` with a root, forward `--allow-external-root` to
+every runtime call. Never change a manifest during query.
 Prune `_templates/**` and `_deprecated/**` before any nomination or ranking.
 Flat installation: without a plugin root, resolve the contract through sibling
 `../tdk-memory-init/references/memory-root-and-asset-contract.md` from this SKILL.md.

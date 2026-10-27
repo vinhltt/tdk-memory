@@ -11,19 +11,20 @@ metadata:
 
 ## Memory root resolution
 
-Load `${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-init/references/memory-root-and-asset-contract.md`.
-Resolve `--memory-root`, enforce both containment layers, and probe Node.js >=18.
+Load `${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-init/references/memory-root-and-asset-contract.md`
+and follow its section 1: step 1 is `resolve` (explicit `--memory-root` only if given,
+`--allow-external-root` only if the user typed it); `<memoryRoot>` is the JSON `root`
+and any `error` STOPs with its code, except that `--fix` also accepts
+`memory-incomplete` with a non-null `root` for its recovery flow. Probe Node.js >=18.
 Apply read-only YAML preflight. With `--fix`, a malformed manifest enters the
 contract's dedicated diagnosis/approval/backup/temp-validation recovery path,
 not ordinary update dispatch. Without approval, perform no writes.
 Flat installation: without a plugin root, resolve the contract through sibling
 `../tdk-memory-init/references/memory-root-and-asset-contract.md` from this SKILL.md.
 Resolve this skill's runtime path from this directory, never from invocation cwd.
-Resolve external-root permission once (the flag in this invocation, or
-`memory.allowExternal` for the root `memory.path` names) and forward
-`--allow-external-root` to every runtime call when it exists. Validation only reads;
-`--fix` writes to an external root only after the contract's once-per-session write
-consent.
+When `resolve` reports `external: true` with a root, forward `--allow-external-root`
+to every runtime call. Validation only reads; `--fix` writes to an external root only
+after the contract's once-per-session write consent.
 
 ## ⛔ CRITICAL: Error Handling
 

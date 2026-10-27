@@ -1,9 +1,9 @@
 # Finalize an authorized writer's files
 
 Public invocation: `/tdk-memory-update --finalize-written <handoff.json>
---memory-root <root> [--allow-external-root]`. The flag is needed only when
-external-root permission does not already come from `memory.allowExternal` for the
-root `memory.path` names.
+--memory-root <root> [--allow-external-root]`. Obtain the root through `resolve`
+(contract section 1); type the flag only when `resolve` rejects an external root the
+user intends to use.
 
 This mode exists for a caller such as `tdk-constitution` that has just written
 explicitly accepted knowledge. It does not edit those files, infer new facts,
@@ -38,9 +38,8 @@ Hash every listed file through the shipped `memory-manifest.cjs hash` command
 `hash` prints plain 64-hex text; only `validate` prints JSON. Each actual hash
 must equal the handoff hash. Reject the entire handoff before writing if any
 path/hash fails. Preserve the original manifest bytes as the concurrency token.
-Forward `--allow-external-root` on every runtime call whenever external-root
-permission exists for this operation (the flag in this invocation, or `allowExternal`
-bound to `memory.path` per the shared contract). A first write to an external root
+Forward `--allow-external-root` on every runtime call when `resolve` reported
+`external: true` with a root (contract section 1). A first write to an external root
 in a session needs the contract's write consent; without it STOP and write nothing.
 
 ## Finalization

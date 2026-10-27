@@ -74,7 +74,10 @@ invocation, or by `memory.allowExternal: true` when the root is the one
 `memory.path` names. A different explicit `--memory-root` outside the workspace
 still needs the flag. Without permission the operation stops with
 `external-not-allowed` and writes nothing. `memory.path` is used literally (`~` is
-not expanded) and must not contain control characters or shell metacharacters.
+not expanded) and must not contain control characters (C0, C1, U+2028/U+2029),
+backslash, or shell metacharacters; a canonical root or workspace path that does
+would be a `containment` error. A root equal to the workspace, to one of its
+ancestors, or to the filesystem root is always refused.
 Prefer a relative path such as `../team-memory`: an absolute `memory.path` exposes
 your machine path once the file is committed, and `/tdk-memory-query --status`
 warns about it.
@@ -84,6 +87,10 @@ update, checksum `--fix`, changelog) asks for confirmation once, naming `memory.
 and the canonical root; a session that cannot ask stops without writing. After
 compaction the question may be asked again. Evidence paths for an external root are
 relative to that root.
+
+The workspace is the nearest ancestor holding `.git` or `.specify/`, so a
+sub-directory with its own `.specify/` inside a larger repository is treated as the
+workspace (and everything outside it as external).
 
 Shared roots: several branches or sessions can point at one external root.
 Concurrent writers are not coordinated beyond the manifest concurrency check, so one

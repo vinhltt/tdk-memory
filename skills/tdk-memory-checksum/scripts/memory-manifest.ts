@@ -31,8 +31,9 @@ const FALLBACK_MEMORY_PATH = "memory";
 const CONSTITUTION_PATH = "constitution.md";
 const MAX_CONFIG_BYTES = 1_048_576;
 const MAX_INDEX_BYTES = 4_194_304;
-// Characters that could break out of a quoted shell argument or a one-line status field.
-const FORBIDDEN_MEMORY_PATH_CHARACTERS = /[\u0000-\u001f\u007f`$"';&|<>]/;
+// Characters that could break out of a quoted shell argument or a one-line status field:
+// C0/C1 controls, line/paragraph separators, backslash, and shell metacharacters.
+const FORBIDDEN_MEMORY_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\`$"';&|<>]/;
 const COVERAGE_PATTERN = /^Binding coverage: (\d+)(?: of |\/)(\d+) typed files[ \t\r]*$/m;
 const DOMAIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -662,6 +663,8 @@ type StatusReport = {
   constitution: "present" | "absent";
   warnings: string[];
   error: string | null;
+  // Remediation selector for `external-not-allowed`; null for every other outcome.
+  hint: string | null;
 };
 
 type RawConfig =
@@ -797,6 +800,7 @@ function parseDomainMap(indexSource: string): string {
   if (headingIndex < 0) return "unknown";
 
   const domains: string[] = [];
+  let rowCount = 0;
   let inRows = false;
   for (const line of lines.slice(headingIndex + 1)) {
     if (line.startsWith("#")) break;
@@ -808,9 +812,13 @@ function parseDomainMap(indexSource: string): string {
       continue;
     }
     const name = (trimmed.slice(1).split("|")[0] ?? "").trim().replace(/^`|`$/g, "");
+    if (name.startsWith("_(")) continue; // empty-table placeholder row
+    rowCount += 1;
     if (DOMAIN_NAME_PATTERN.test(name) && !domains.includes(name)) domains.push(name);
   }
-  return domains.length === 0 ? "none" : domains.join(", ");
+  if (domains.length > 0) return domains.join(", ");
+  // Rows exist but none names a domain: the table is not understood, so do not claim "none".
+  return rowCount === 0 ? "none" : "unknown";
 }
 
 async function isRegularFileBelow(root: string, relativePath: string): Promise<boolean> {
@@ -839,11 +847,13 @@ async function resolveStatus(explicitRoot: string | undefined, allowFlag: boolea
     constitution: "absent",
     warnings,
     error: null,
+    hint: null,
   };
-  const failure = (code: string): StatusReport => ({ ...base, error: code });
+  const failure = (code: string, extra: Partial<StatusReport> = {}): StatusReport => ({ ...base, ...extra, error: code });
 
   if (config.invalid) return failure("config-invalid");
   if (config.readerBackend !== undefined && config.readerBackend !== "file") return failure("unsupported-reader");
+  if (explicitRoot !== undefined && explicitRoot.trim().length === 0) return failure("config-invalid");
 
   let lexicalRoot: string;
   let freshInitRoot = false;
@@ -868,8 +878,16 @@ async function resolveStatus(explicitRoot: string | undefined, allowFlag: boolea
   }
 
   const canonicalRoot = await realpathFromNearestExisting(lexicalRoot);
+  // `memory.path` was screened above; anything forbidden that remains came from the
+  // workspace location, an explicit root, or a symlink target, and the canonical
+  // root is later interpolated into shell commands.
+  if (FORBIDDEN_MEMORY_PATH_CHARACTERS.test(canonicalRoot) || FORBIDDEN_MEMORY_PATH_CHARACTERS.test(workspaceRoot)) {
+    return failure("containment");
+  }
   const lexicallyInside = isContained(workspaceRoot, lexicalRoot);
   const external = !(lexicallyInside && isContained(workspaceRoot, canonicalRoot));
+  // A root equal to, or above, the workspace (including the filesystem root) is never a memory root.
+  if (isContained(canonicalRoot, workspaceRoot)) return failure("containment", { external });
 
   // External roots need the per-invocation flag, or `allowExternal: true` for the
   // root that `memory.path` itself names (never for an unrelated explicit root).
@@ -879,10 +897,18 @@ async function resolveStatus(explicitRoot: string | undefined, allowFlag: boolea
       const configCanonical = await realpathFromNearestExisting(await configuredRootPath(workspaceRoot, configuredPath));
       permittedByConfig = configCanonical === canonicalRoot;
     }
-    if (!permittedByConfig) return failure(lexicallyInside ? "containment" : "external-not-allowed");
+    if (!permittedByConfig) {
+      if (lexicallyInside) return failure("containment", { external });
+      const hint = config.allowExternal && configuredPath !== undefined ? "explicit-root-differs" : "enable-allow-external";
+      return failure("external-not-allowed", { external, hint });
+    }
   }
 
-  if (!freshInitRoot && !(await isDirectory(lexicalRoot))) return failure("root-missing");
+  // Permission checks passed: report the session root even when it does not exist yet
+  // so initialization can create it.
+  if (!freshInitRoot && !(await isDirectory(lexicalRoot))) {
+    return failure("root-missing", { root: canonicalRoot, external });
+  }
 
   const result: StatusReport = { ...base, root: canonicalRoot, external };
   const legacyRoot = await realpathFromNearestExisting(join(workspaceRoot, ...DEFAULT_MEMORY_PATH.split("/")));
@@ -899,11 +925,11 @@ async function resolveStatus(explicitRoot: string | undefined, allowFlag: boolea
     hasIndex = (await inspectContainedTarget(canonicalRoot, INDEX_PATH, "memory index")).kind === "file";
     hasManifest = (await inspectContainedTarget(canonicalRoot, DEFAULT_MANIFEST_PATH, "memory manifest")).kind === "file";
   } catch (error) {
-    if (error instanceof CliError) return { ...failure("containment"), warnings: result.warnings };
+    if (error instanceof CliError) return failure("containment", { external, warnings: result.warnings });
     throw error;
   }
   if (!hasIndex && !hasManifest) return { ...result, status: "uninitialized" };
-  if (hasIndex !== hasManifest) return { ...failure("memory-incomplete"), warnings: result.warnings };
+  if (hasIndex !== hasManifest) return failure("memory-incomplete", { root: canonicalRoot, external, warnings: result.warnings });
 
   const indexSource = await readContainedText(canonicalRoot, INDEX_PATH, MAX_INDEX_BYTES);
   return {

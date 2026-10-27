@@ -48,7 +48,7 @@ error: <code> — <memory.path as configured>
 | Line | Source JSON field | Rule |
 |---|---|---|
 | `status` | `status` | copy |
-| `root` | `root` | copy; `none` when `null` (every `error` status) |
+| `root` | `root` | copy; `none` when `null`. Non-null for `root-missing` and `memory-incomplete` errors too (the location passed the permission and containment checks); this line is the only place an absolute path may appear |
 | `memory_path` | `memory_path` | copy; the only path value a consumer may persist |
 | `external` | `external` | `true` / `false` |
 | `reader`, `reader_fallback` | `reader`, `reader_fallback` | copy |
@@ -65,17 +65,24 @@ example with `/tdk-memory-init --ensure-templates`); `error` carries one code.
 | Error code | Meaning |
 |---|---|
 | `config-invalid` | `.specify/.specify.json` memory settings are malformed or contain forbidden characters; `memory_path` shows them with `?` substituted |
-| `external-not-allowed` | root is outside the workspace and neither the flag nor `allowExternal` bound to `memory.path` permits it |
+| `external-not-allowed` | root is outside the workspace (`external: true`) and neither the flag nor `allowExternal` bound to `memory.path` permits it |
 | `root-missing` | the configured or explicit root does not exist (only initialization creates a root) |
 | `ambiguous-default` | `.specify/memory/` and `memory/` both exist and nothing selects one |
 | `memory-incomplete` | only one of `memory-index.md` and `memory.yaml` exists |
-| `containment` | a symlink moves the root or a control file outside the permitted boundary |
+| `containment` | a symlink moves the root or a control file outside the permitted boundary, the canonical root or workspace path contains a forbidden character, or the root is the workspace, one of its ancestors, or the filesystem root |
 | `unsupported-reader` | `memory.reader.backend` names a backend this version does not provide |
 
 Warning codes: `absolute-path` (an absolute `memory.path` exposes a machine path
 once committed) and `legacy-constitution` (the root is not `.specify/memory` yet
 `.specify/memory/constitution.md` still exists; suggest moving it into the root
 with `git mv`). Put any such hint in plain prose after the block, never inside it.
+
+For `external-not-allowed` the JSON `hint` selects the prose remediation after the
+block: `enable-allow-external` means add `"allowExternal": true` beside the
+`memory.path` that names this root (or pass `--allow-external-root`);
+`explicit-root-differs` means `allowExternal` is already on but the explicit
+`--memory-root` is another external root than `memory.path`, so drop it or pass
+`--allow-external-root`. Do not suggest enabling what is already enabled.
 
 ## Output rules
 
