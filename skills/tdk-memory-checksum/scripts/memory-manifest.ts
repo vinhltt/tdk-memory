@@ -47,10 +47,15 @@ const READER_ON_UNAVAILABLE = ["ask", "fallback", "fail"] as const;
 const COVERAGE_PATTERN = /^Binding coverage: (\d+)(?: of |\/)(\d+) typed files[ \t\r]*$/m;
 const DOMAIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+// Git may rewrite line endings of these text files at checkout, so their identity is
+// the content with CRLF folded to LF. Every other file keeps its byte-exact digest.
+const LINE_ENDING_NEUTRAL_SUFFIXES = [".md", ".md.tpl", ".canvas"];
+const CARRIAGE_RETURN = 0x0d;
+const LINE_FEED = 0x0a;
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 type Invocation =
-  | { command: "hash"; memoryRootArgument: string; relativePath: string; allowExternalRoot: boolean }
+  | { command: "hash"; memoryRootArgument: string; relativePath: string; allowExternalRoot: boolean; raw: boolean }
   | { command: "validate"; memoryRootArgument: string; manifestRelativePath: string; allowExternalRoot: boolean }
   | { command: "resolve"; memoryRootArgument: string | undefined; allowExternalRoot: boolean };
 
@@ -80,6 +85,13 @@ type HashMismatch = {
   actual: string | null;
 };
 
+// `canonical` is what `hash` prints and what new receipts record. `legacy` holds the
+// other digests an older runtime could have recorded for the same content.
+type ContentDigests = {
+  canonical: string;
+  legacy: string[];
+};
+
 class CliError extends Error {}
 
 function fail(message: string): never {
@@ -89,7 +101,7 @@ function fail(message: string): never {
 function usage(): never {
   fail(
     "Usage:\n" +
-      "  node memory-manifest.cjs hash <memoryRoot> <relPath> [--allow-external-root]\n" +
+      "  node memory-manifest.cjs hash <memoryRoot> <relPath> [--raw] [--allow-external-root]\n" +
       "  node memory-manifest.cjs validate <memoryRoot> [--manifest <relativePath>] [--allow-external-root]\n" +
       "  node memory-manifest.cjs resolve [--memory-root <path>] [--allow-external-root]",
   );
@@ -100,12 +112,16 @@ function parseInvocation(argumentsAfterNode: string[]): Invocation {
 
   if (command === "hash") {
     let allowExternalRoot = false;
+    let raw = false;
     const positional: string[] = [];
 
     for (const argument of rest) {
       if (argument === "--allow-external-root") {
         if (allowExternalRoot) fail("--allow-external-root may only be provided once");
         allowExternalRoot = true;
+      } else if (argument === "--raw") {
+        if (raw) fail("--raw may only be provided once");
+        raw = true;
       } else if (argument.startsWith("--")) {
         usage();
       } else {
@@ -119,6 +135,7 @@ function parseInvocation(argumentsAfterNode: string[]): Invocation {
       memoryRootArgument: positional[0],
       relativePath: positional[1],
       allowExternalRoot,
+      raw,
     };
   }
 
@@ -331,6 +348,62 @@ async function hashRegularFile(filePath: string): Promise<string> {
   } finally {
     await handle?.close();
   }
+}
+
+async function readRegularFile(filePath: string): Promise<Buffer> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await fs.open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const info = await handle.stat();
+    if (!info.isFile()) fail(`not a regular file: ${filePath}`);
+    return await handle.readFile();
+  } catch (error) {
+    if (error instanceof CliError) throw error;
+    fail(`cannot read ${filePath}: ${errorMessage(error)}`);
+  } finally {
+    await handle?.close();
+  }
+}
+
+function isLineEndingNeutral(relativePath: string): boolean {
+  return LINE_ENDING_NEUTRAL_SUFFIXES.some((suffix) => relativePath.endsWith(suffix));
+}
+
+function crlfToLf(source: Buffer): Buffer {
+  const output = Buffer.allocUnsafe(source.length);
+  let length = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === CARRIAGE_RETURN && source[index + 1] === LINE_FEED) continue;
+    output[length] = source[index];
+    length += 1;
+  }
+  return output.subarray(0, length);
+}
+
+function lfToCrlf(source: Buffer): Buffer {
+  const output = Buffer.allocUnsafe(source.length * 2);
+  let length = 0;
+  for (const byte of source) {
+    if (byte === LINE_FEED) {
+      output[length] = CARRIAGE_RETURN;
+      length += 1;
+    }
+    output[length] = byte;
+    length += 1;
+  }
+  return output.subarray(0, length);
+}
+
+function sha256Hex(contents: Buffer): string {
+  return createHash("sha256").update(contents).digest("hex");
+}
+
+async function digestsOfFile(filePath: string, relativePath: string): Promise<ContentDigests> {
+  if (!isLineEndingNeutral(relativePath)) return { canonical: await hashRegularFile(filePath), legacy: [] };
+
+  const bytes = await readRegularFile(filePath);
+  const normalized = crlfToLf(bytes);
+  return { canonical: sha256Hex(normalized), legacy: [sha256Hex(bytes), sha256Hex(lfToCrlf(normalized))] };
 }
 
 async function readManifestSource(filePath: string): Promise<string> {
@@ -595,10 +668,10 @@ async function scanTemplateFiles(memoryRoot: string): Promise<string[]> {
   return scanFiles(memoryRoot, TEMPLATE_DIRECTORY, (relativePath) => relativePath.endsWith(".md.tpl"));
 }
 
-async function hashContainedFile(memoryRoot: string, relativePath: string, subject: string): Promise<string | undefined> {
+async function digestsOfContainedFile(memoryRoot: string, relativePath: string, subject: string): Promise<ContentDigests | undefined> {
   const target = await inspectContainedTarget(memoryRoot, relativePath, subject);
   if (target.kind !== "file") return undefined;
-  return hashRegularFile(target.path);
+  return digestsOfFile(target.path, relativePath);
 }
 
 
@@ -626,34 +699,44 @@ async function validate(memoryRootArgument: string, manifestRelativePath: string
 
   const mismatches: HashMismatch[] = [];
   const missingFromDisk: string[] = [];
+  const legacyReceipts: string[] = [];
   let verifiedCount = 0;
 
+  // A receipt from an older runtime proves the same content, so it counts as verified
+  // and is only listed for an optional re-baseline.
+  const matchesReceipt = (relativePath: string, recorded: string, digests: ContentDigests): boolean => {
+    if (recorded === digests.canonical) return true;
+    if (!digests.legacy.includes(recorded)) return false;
+    legacyReceipts.push(relativePath);
+    return true;
+  };
+
   for (const receipt of [...fileReceipts].sort((left, right) => left.path.localeCompare(right.path))) {
-    const actual = await hashContainedFile(memoryRoot, receipt.path, `manifest file ${receipt.path}`);
-    if (actual === undefined) {
+    const digests = await digestsOfContainedFile(memoryRoot, receipt.path, `manifest file ${receipt.path}`);
+    if (digests === undefined) {
       missingFromDisk.push(receipt.path);
-    } else if (actual !== receipt.sha256) {
-      mismatches.push({ path: receipt.path, expected: receipt.sha256, actual });
-    } else {
+    } else if (matchesReceipt(receipt.path, receipt.sha256, digests)) {
       verifiedCount += 1;
+    } else {
+      mismatches.push({ path: receipt.path, expected: receipt.sha256, actual: digests.canonical });
     }
   }
 
-  const indexActual = await hashContainedFile(memoryRoot, INDEX_PATH, "memory index");
-  const indexMismatch = indexActual === undefined || indexActual !== manifest.memoryIndexSha256;
+  const indexDigests = await digestsOfContainedFile(memoryRoot, INDEX_PATH, "memory index");
+  const indexMismatch = indexDigests === undefined || !matchesReceipt(INDEX_PATH, manifest.memoryIndexSha256, indexDigests);
 
   const templateMismatches: HashMismatch[] = [];
   for (const receipt of [...templateReceipts].sort((left, right) => left.path.localeCompare(right.path))) {
-    const actual = await hashContainedFile(memoryRoot, receipt.path, `template ${receipt.path}`);
-    if (actual === undefined || actual !== receipt.sha256) {
-      templateMismatches.push({ path: receipt.path, expected: receipt.sha256, actual: actual ?? null });
+    const digests = await digestsOfContainedFile(memoryRoot, receipt.path, `template ${receipt.path}`);
+    if (digests === undefined || !matchesReceipt(receipt.path, receipt.sha256, digests)) {
+      templateMismatches.push({ path: receipt.path, expected: receipt.sha256, actual: digests?.canonical ?? null });
     }
   }
   for (const relativePath of [...diskTemplates].sort((left, right) => left.localeCompare(right))) {
     if (templatePaths.has(relativePath)) continue;
-    const actual = await hashContainedFile(memoryRoot, relativePath, `template ${relativePath}`);
-    if (actual === undefined) fail(`template disappeared while validating: ${relativePath}`);
-    templateMismatches.push({ path: relativePath, expected: null, actual });
+    const digests = await digestsOfContainedFile(memoryRoot, relativePath, `template ${relativePath}`);
+    if (digests === undefined) fail(`template disappeared while validating: ${relativePath}`);
+    templateMismatches.push({ path: relativePath, expected: null, actual: digests.canonical });
   }
 
   const result = {
@@ -664,15 +747,16 @@ async function validate(memoryRootArgument: string, manifestRelativePath: string
     index_mismatch: indexMismatch,
     templates_mismatches: templateMismatches.sort((left, right) => left.path.localeCompare(right.path)),
     unsafe_paths: [...unsafePaths].sort((left, right) => left.localeCompare(right)),
+    legacy_receipts: legacyReceipts.sort((left, right) => left.localeCompare(right)),
   };
   console.log(JSON.stringify(result, null, 2));
 }
 
-async function hash(memoryRootArgument: string, relativePath: string, allowExternalRoot: boolean): Promise<void> {
+async function hash(memoryRootArgument: string, relativePath: string, allowExternalRoot: boolean, raw: boolean): Promise<void> {
   const memoryRoot = await resolveMemoryRoot(memoryRootArgument, allowExternalRoot);
   const target = await inspectContainedTarget(memoryRoot, relativePath, "hash path");
   if (target.kind !== "file") fail(`file not found: ${join(memoryRoot, ...validateRelativePath(relativePath, "hash path"))}`);
-  console.log(await hashRegularFile(target.path));
+  console.log(raw ? await hashRegularFile(target.path) : (await digestsOfFile(target.path, relativePath)).canonical);
 }
 
 type ReaderOnUnavailable = (typeof READER_ON_UNAVAILABLE)[number];
@@ -1000,7 +1084,7 @@ async function main(): Promise<void> {
   if (Number(process.versions.node.split(".")[0]) < 18) fail("Node.js >=18 is required");
   const invocation = parseInvocation(process.argv.slice(2));
   if (invocation.command === "hash") {
-    await hash(invocation.memoryRootArgument, invocation.relativePath, invocation.allowExternalRoot);
+    await hash(invocation.memoryRootArgument, invocation.relativePath, invocation.allowExternalRoot, invocation.raw);
   } else if (invocation.command === "validate") {
     await validate(invocation.memoryRootArgument, invocation.manifestRelativePath, invocation.allowExternalRoot);
   } else {

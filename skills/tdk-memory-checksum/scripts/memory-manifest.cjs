@@ -7095,6 +7095,9 @@ var READER_ON_UNAVAILABLE = ["ask", "fallback", "fail"];
 var COVERAGE_PATTERN = /^Binding coverage: (\d+)(?: of |\/)(\d+) typed files[ \t\r]*$/m;
 var DOMAIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 var SHA256_PATTERN = /^[a-f0-9]{64}$/;
+var LINE_ENDING_NEUTRAL_SUFFIXES = [".md", ".md.tpl", ".canvas"];
+var CARRIAGE_RETURN = 13;
+var LINE_FEED = 10;
 var ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 class CliError extends Error {
@@ -7104,7 +7107,7 @@ function fail(message) {
 }
 function usage() {
   fail(`Usage:
-` + `  node memory-manifest.cjs hash <memoryRoot> <relPath> [--allow-external-root]
+` + `  node memory-manifest.cjs hash <memoryRoot> <relPath> [--raw] [--allow-external-root]
 ` + `  node memory-manifest.cjs validate <memoryRoot> [--manifest <relativePath>] [--allow-external-root]
 ` + "  node memory-manifest.cjs resolve [--memory-root <path>] [--allow-external-root]");
 }
@@ -7112,12 +7115,17 @@ function parseInvocation(argumentsAfterNode) {
   const [command, ...rest] = argumentsAfterNode;
   if (command === "hash") {
     let allowExternalRoot = false;
+    let raw = false;
     const positional = [];
     for (const argument of rest) {
       if (argument === "--allow-external-root") {
         if (allowExternalRoot)
           fail("--allow-external-root may only be provided once");
         allowExternalRoot = true;
+      } else if (argument === "--raw") {
+        if (raw)
+          fail("--raw may only be provided once");
+        raw = true;
       } else if (argument.startsWith("--")) {
         usage();
       } else {
@@ -7130,7 +7138,8 @@ function parseInvocation(argumentsAfterNode) {
       command,
       memoryRootArgument: positional[0],
       relativePath: positional[1],
-      allowExternalRoot
+      allowExternalRoot,
+      raw
     };
   }
   if (command === "validate") {
@@ -7331,6 +7340,59 @@ async function hashRegularFile(filePath) {
   } finally {
     await handle?.close();
   }
+}
+async function readRegularFile(filePath) {
+  let handle;
+  try {
+    handle = await import_node_fs.promises.open(filePath, import_node_fs.constants.O_RDONLY | (import_node_fs.constants.O_NOFOLLOW ?? 0));
+    const info = await handle.stat();
+    if (!info.isFile())
+      fail(`not a regular file: ${filePath}`);
+    return await handle.readFile();
+  } catch (error) {
+    if (error instanceof CliError)
+      throw error;
+    fail(`cannot read ${filePath}: ${errorMessage(error)}`);
+  } finally {
+    await handle?.close();
+  }
+}
+function isLineEndingNeutral(relativePath) {
+  return LINE_ENDING_NEUTRAL_SUFFIXES.some((suffix) => relativePath.endsWith(suffix));
+}
+function crlfToLf(source) {
+  const output = Buffer.allocUnsafe(source.length);
+  let length = 0;
+  for (let index = 0;index < source.length; index += 1) {
+    if (source[index] === CARRIAGE_RETURN && source[index + 1] === LINE_FEED)
+      continue;
+    output[length] = source[index];
+    length += 1;
+  }
+  return output.subarray(0, length);
+}
+function lfToCrlf(source) {
+  const output = Buffer.allocUnsafe(source.length * 2);
+  let length = 0;
+  for (const byte of source) {
+    if (byte === LINE_FEED) {
+      output[length] = CARRIAGE_RETURN;
+      length += 1;
+    }
+    output[length] = byte;
+    length += 1;
+  }
+  return output.subarray(0, length);
+}
+function sha256Hex(contents) {
+  return import_node_crypto.createHash("sha256").update(contents).digest("hex");
+}
+async function digestsOfFile(filePath, relativePath) {
+  if (!isLineEndingNeutral(relativePath))
+    return { canonical: await hashRegularFile(filePath), legacy: [] };
+  const bytes = await readRegularFile(filePath);
+  const normalized = crlfToLf(bytes);
+  return { canonical: sha256Hex(normalized), legacy: [sha256Hex(bytes), sha256Hex(lfToCrlf(normalized))] };
 }
 async function readManifestSource(filePath) {
   let handle;
@@ -7580,11 +7642,11 @@ async function scanTemplateFiles(memoryRoot) {
   }
   return scanFiles(memoryRoot, TEMPLATE_DIRECTORY, (relativePath) => relativePath.endsWith(".md.tpl"));
 }
-async function hashContainedFile(memoryRoot, relativePath, subject) {
+async function digestsOfContainedFile(memoryRoot, relativePath, subject) {
   const target = await inspectContainedTarget(memoryRoot, relativePath, subject);
   if (target.kind !== "file")
     return;
-  return hashRegularFile(target.path);
+  return digestsOfFile(target.path, relativePath);
 }
 async function validate(memoryRootArgument, manifestRelativePath, allowExternalRoot) {
   const memoryRoot = await resolveMemoryRoot(memoryRootArgument, allowExternalRoot);
@@ -7607,33 +7669,42 @@ async function validate(memoryRootArgument, manifestRelativePath, allowExternalR
   const templatePaths = new Set(templateReceipts.map((receipt) => receipt.path));
   const mismatches = [];
   const missingFromDisk = [];
+  const legacyReceipts = [];
   let verifiedCount = 0;
+  const matchesReceipt = (relativePath, recorded, digests) => {
+    if (recorded === digests.canonical)
+      return true;
+    if (!digests.legacy.includes(recorded))
+      return false;
+    legacyReceipts.push(relativePath);
+    return true;
+  };
   for (const receipt of [...fileReceipts].sort((left, right) => left.path.localeCompare(right.path))) {
-    const actual = await hashContainedFile(memoryRoot, receipt.path, `manifest file ${receipt.path}`);
-    if (actual === undefined) {
+    const digests = await digestsOfContainedFile(memoryRoot, receipt.path, `manifest file ${receipt.path}`);
+    if (digests === undefined) {
       missingFromDisk.push(receipt.path);
-    } else if (actual !== receipt.sha256) {
-      mismatches.push({ path: receipt.path, expected: receipt.sha256, actual });
-    } else {
+    } else if (matchesReceipt(receipt.path, receipt.sha256, digests)) {
       verifiedCount += 1;
+    } else {
+      mismatches.push({ path: receipt.path, expected: receipt.sha256, actual: digests.canonical });
     }
   }
-  const indexActual = await hashContainedFile(memoryRoot, INDEX_PATH, "memory index");
-  const indexMismatch = indexActual === undefined || indexActual !== manifest.memoryIndexSha256;
+  const indexDigests = await digestsOfContainedFile(memoryRoot, INDEX_PATH, "memory index");
+  const indexMismatch = indexDigests === undefined || !matchesReceipt(INDEX_PATH, manifest.memoryIndexSha256, indexDigests);
   const templateMismatches = [];
   for (const receipt of [...templateReceipts].sort((left, right) => left.path.localeCompare(right.path))) {
-    const actual = await hashContainedFile(memoryRoot, receipt.path, `template ${receipt.path}`);
-    if (actual === undefined || actual !== receipt.sha256) {
-      templateMismatches.push({ path: receipt.path, expected: receipt.sha256, actual: actual ?? null });
+    const digests = await digestsOfContainedFile(memoryRoot, receipt.path, `template ${receipt.path}`);
+    if (digests === undefined || !matchesReceipt(receipt.path, receipt.sha256, digests)) {
+      templateMismatches.push({ path: receipt.path, expected: receipt.sha256, actual: digests?.canonical ?? null });
     }
   }
   for (const relativePath of [...diskTemplates].sort((left, right) => left.localeCompare(right))) {
     if (templatePaths.has(relativePath))
       continue;
-    const actual = await hashContainedFile(memoryRoot, relativePath, `template ${relativePath}`);
-    if (actual === undefined)
+    const digests = await digestsOfContainedFile(memoryRoot, relativePath, `template ${relativePath}`);
+    if (digests === undefined)
       fail(`template disappeared while validating: ${relativePath}`);
-    templateMismatches.push({ path: relativePath, expected: null, actual });
+    templateMismatches.push({ path: relativePath, expected: null, actual: digests.canonical });
   }
   const result = {
     mismatches: mismatches.sort((left, right) => left.path.localeCompare(right.path)),
@@ -7642,16 +7713,17 @@ async function validate(memoryRootArgument, manifestRelativePath, allowExternalR
     verified_count: verifiedCount,
     index_mismatch: indexMismatch,
     templates_mismatches: templateMismatches.sort((left, right) => left.path.localeCompare(right.path)),
-    unsafe_paths: [...unsafePaths].sort((left, right) => left.localeCompare(right))
+    unsafe_paths: [...unsafePaths].sort((left, right) => left.localeCompare(right)),
+    legacy_receipts: legacyReceipts.sort((left, right) => left.localeCompare(right))
   };
   console.log(JSON.stringify(result, null, 2));
 }
-async function hash(memoryRootArgument, relativePath, allowExternalRoot) {
+async function hash(memoryRootArgument, relativePath, allowExternalRoot, raw) {
   const memoryRoot = await resolveMemoryRoot(memoryRootArgument, allowExternalRoot);
   const target = await inspectContainedTarget(memoryRoot, relativePath, "hash path");
   if (target.kind !== "file")
     fail(`file not found: ${import_node_path.join(memoryRoot, ...validateRelativePath(relativePath, "hash path"))}`);
-  console.log(await hashRegularFile(target.path));
+  console.log(raw ? await hashRegularFile(target.path) : (await digestsOfFile(target.path, relativePath)).canonical);
 }
 var FILE_READER = { backend: "file", invalid: false };
 var INVALID_READER = { backend: "file", invalid: true };
@@ -7941,7 +8013,7 @@ async function main() {
     fail("Node.js >=18 is required");
   const invocation = parseInvocation(process.argv.slice(2));
   if (invocation.command === "hash") {
-    await hash(invocation.memoryRootArgument, invocation.relativePath, invocation.allowExternalRoot);
+    await hash(invocation.memoryRootArgument, invocation.relativePath, invocation.allowExternalRoot, invocation.raw);
   } else if (invocation.command === "validate") {
     await validate(invocation.memoryRootArgument, invocation.manifestRelativePath, invocation.allowExternalRoot);
   } else {
