@@ -6,6 +6,7 @@ import { constants as fsConstants, promises as fs, type Dirent, type FileHandle,
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { isAlias, isMap, isScalar, isSeq, parseDocument, type Node } from "yaml";
+import { printableTerm, rankNotes, type NoteIdentity, type RankableNote } from "./memory-query-ranking";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +35,19 @@ const FALLBACK_MEMORY_PATH = "memory";
 const CONSTITUTION_PATH = "constitution.md";
 const MAX_CONFIG_BYTES = 1_048_576;
 const MAX_INDEX_BYTES = 4_194_304;
+const MAX_RANK_INPUT_BYTES = 1_048_576;
+const MAX_FRONTMATTER_CHARACTERS = 65_536;
+const YAML_PARSE_OPTIONS = {
+  customTags: null,
+  merge: false,
+  prettyErrors: false,
+  resolveKnownTags: false,
+  schema: "core",
+  strict: true,
+  stringKeys: true,
+  uniqueKeys: true,
+  version: "1.2",
+} as const;
 // Characters that could break out of a quoted shell argument or a one-line status field:
 // C0/C1 controls, line/paragraph separators, backslash, and shell metacharacters.
 const FORBIDDEN_MEMORY_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\`$"';&|<>]/;
@@ -57,7 +71,9 @@ const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:
 type Invocation =
   | { command: "hash"; memoryRootArgument: string; relativePath: string; allowExternalRoot: boolean; raw: boolean }
   | { command: "validate"; memoryRootArgument: string; manifestRelativePath: string; allowExternalRoot: boolean }
-  | { command: "resolve"; memoryRootArgument: string | undefined; allowExternalRoot: boolean };
+  | { command: "resolve"; memoryRootArgument: string | undefined; allowExternalRoot: boolean }
+  | { command: "rank"; memoryRootArgument: string; allowExternalRoot: boolean; scopes: string[] }
+  | { command: "print-term" };
 
 type FileReceipt = {
   path: string;
@@ -103,7 +119,9 @@ function usage(): never {
     "Usage:\n" +
       "  node memory-manifest.cjs hash <memoryRoot> <relPath> [--raw] [--allow-external-root]\n" +
       "  node memory-manifest.cjs validate <memoryRoot> [--manifest <relativePath>] [--allow-external-root]\n" +
-      "  node memory-manifest.cjs resolve [--memory-root <path>] [--allow-external-root]",
+      "  node memory-manifest.cjs resolve [--memory-root <path>] [--allow-external-root]\n" +
+      "  node memory-manifest.cjs rank <memoryRoot> [--scope <prefix>]... [--allow-external-root] < request.json\n" +
+      "  node memory-manifest.cjs rank --print-term < request.json",
   );
 }
 
@@ -188,6 +206,34 @@ function parseInvocation(argumentsAfterNode: string[]): Invocation {
     }
 
     return { command, memoryRootArgument, allowExternalRoot };
+  }
+
+  if (command === "rank") {
+    if (rest.length === 1 && rest[0] === "--print-term") return { command: "print-term" };
+    if (rest.length === 0 || rest[0].startsWith("--")) usage();
+
+    const memoryRootArgument = rest[0];
+    let allowExternalRoot = false;
+    const scopes: string[] = [];
+
+    for (let index = 1; index < rest.length; index += 1) {
+      const argument = rest[index];
+      if (argument === "--allow-external-root") {
+        if (allowExternalRoot) fail("--allow-external-root may only be provided once");
+        allowExternalRoot = true;
+        continue;
+      }
+      if (argument === "--scope") {
+        if (index + 1 >= rest.length || rest[index + 1].startsWith("--")) usage();
+        validateRelativePath(rest[index + 1], "--scope");
+        scopes.push(rest[index + 1]);
+        index += 1;
+        continue;
+      }
+      usage();
+    }
+
+    return { command, memoryRootArgument, allowExternalRoot, scopes };
   }
 
   usage();
@@ -549,17 +595,7 @@ async function readManifest(manifestPath: string): Promise<Manifest> {
   const source = await readManifestSource(manifestPath);
   let document;
   try {
-    document = parseDocument(source, {
-      customTags: null,
-      merge: false,
-      prettyErrors: false,
-      resolveKnownTags: false,
-      schema: "core",
-      strict: true,
-      stringKeys: true,
-      uniqueKeys: true,
-      version: "1.2",
-    });
+    document = parseDocument(source, YAML_PARSE_OPTIONS);
   } catch (error) {
     fail(`failed to parse manifest ${manifestPath}: ${errorMessage(error)}`);
   }
@@ -1080,6 +1116,139 @@ async function resolveCommand(explicitRoot: string | undefined, allowFlag: boole
   console.log(JSON.stringify(await resolveStatus(explicitRoot, allowFlag), null, 2));
 }
 
+type RankRequest = {
+  terms: string[];
+  candidates: string[] | undefined;
+};
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+// Terms come from untrusted text, so they travel on stdin only and no error repeats them.
+async function readRankRequest(): Promise<RankRequest> {
+  if (process.stdin.isTTY) fail("rank reads its JSON request from stdin");
+
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    size += chunk.length;
+    if (size > MAX_RANK_INPUT_BYTES) fail(`rank input exceeds ${MAX_RANK_INPUT_BYTES} bytes`);
+    chunks.push(chunk);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    fail("rank input is not valid JSON");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) fail("rank input must be a JSON object");
+
+  const { terms, candidates, ...unknownKeys } = parsed as Record<string, unknown>;
+  if (Object.keys(unknownKeys).length > 0) fail("rank input accepts only terms and candidates");
+  if (!isStringArray(terms) || terms.length === 0) fail("rank input needs a non-empty terms array of strings");
+  if (candidates !== undefined && !isStringArray(candidates)) fail("rank input candidates must be an array of strings");
+  return { terms, candidates };
+}
+
+function scalarText(node: unknown): string | undefined {
+  if (!isScalar(node) || node.value === null || node.value === undefined) return undefined;
+  return String(node.value);
+}
+
+// A malformed block is no identity rather than a failure: the note still ranks by path
+// and body. Aliases are never followed, so only literal scalars can name a note.
+function readNoteIdentity(text: string): NoteIdentity {
+  const identity: NoteIdentity = { aliases: [] };
+  if (!text.startsWith("---\n")) return identity;
+  const closing = /\n---[ \t]*(?:\n|$)/.exec(text.slice(3, MAX_FRONTMATTER_CHARACTERS));
+  if (closing === null) return identity;
+
+  let document;
+  try {
+    document = parseDocument(text.slice(3, 3 + closing.index), YAML_PARSE_OPTIONS);
+  } catch {
+    return identity;
+  }
+  if (document.errors.length > 0 || !isMap(document.contents)) return identity;
+
+  for (const pair of document.contents.items) {
+    const key = isScalar(pair.key) ? pair.key.value : undefined;
+    if (key === "id") identity.id = scalarText(pair.value);
+    if (key === "title") identity.title = scalarText(pair.value);
+    if (key === "aliases") {
+      const values = isSeq(pair.value) ? pair.value.items : [pair.value];
+      identity.aliases = values.map(scalarText).filter((value): value is string => value !== undefined);
+    }
+  }
+  return identity;
+}
+
+async function readRankableNote(memoryRoot: string, relativePath: string): Promise<RankableNote> {
+  const bytes = await readRegularFile(join(memoryRoot, ...relativePath.split("/")));
+  const text = crlfToLf(bytes).toString("utf8");
+  return { path: relativePath, text, identity: readNoteIdentity(text) };
+}
+
+function isWithinScopes(relativePath: string, scopes: string[]): boolean {
+  if (scopes.length === 0) return true;
+  const path = relativePath.normalize("NFC");
+  return scopes.some((scope) => {
+    const prefix = scope.normalize("NFC");
+    return path === prefix || path.startsWith(`${prefix}/`);
+  });
+}
+
+async function rank(memoryRootArgument: string, allowExternalRoot: boolean, scopes: string[]): Promise<void> {
+  const request = await readRankRequest();
+  const memoryRoot = await resolveMemoryRoot(memoryRootArgument, allowExternalRoot);
+  const inventory = await scanFiles(memoryRoot, "", (relativePath) => relativePath.endsWith(".md"));
+
+  // Results reach shell commands, so an active name is only reported, masked, as in validate.
+  const safePaths: string[] = [];
+  const unsafePaths = new Set<string>();
+  for (const relativePath of inventory) {
+    if (hasForbiddenLocationCharacter(relativePath)) unsafePaths.add(displayMemoryPath(relativePath));
+    else safePaths.push(relativePath);
+  }
+
+  // Candidates only narrow the inventory, so containment and exclusions have one source.
+  let nominated = safePaths;
+  let rejectedCandidates = 0;
+  if (request.candidates !== undefined) {
+    const diskPathByNormalForm = new Map(safePaths.map((relativePath) => [relativePath.normalize("NFC"), relativePath]));
+    const accepted = new Set<string>();
+    for (const candidate of request.candidates) {
+      const diskPath = diskPathByNormalForm.get(candidate.normalize("NFC"));
+      if (diskPath === undefined) rejectedCandidates += 1;
+      else accepted.add(diskPath);
+    }
+    nominated = [...accepted];
+  }
+
+  const notes: RankableNote[] = [];
+  for (const relativePath of nominated) {
+    if (isWithinScopes(relativePath, scopes)) notes.push(await readRankableNote(memoryRoot, relativePath));
+  }
+
+  const { total, selected, omitted } = rankNotes(request.terms, notes);
+  const result = {
+    total,
+    selected,
+    omitted,
+    rejected_candidates: rejectedCandidates,
+    unsafe_paths: [...unsafePaths].sort((left, right) => left.localeCompare(right)),
+  };
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function printTerm(): Promise<void> {
+  const { terms, candidates } = await readRankRequest();
+  if (terms.length !== 1 || candidates !== undefined) fail("rank --print-term needs exactly one term and no candidates");
+  console.log(JSON.stringify({ term: printableTerm(terms[0]) }));
+}
+
 async function main(): Promise<void> {
   if (Number(process.versions.node.split(".")[0]) < 18) fail("Node.js >=18 is required");
   const invocation = parseInvocation(process.argv.slice(2));
@@ -1087,6 +1256,10 @@ async function main(): Promise<void> {
     await hash(invocation.memoryRootArgument, invocation.relativePath, invocation.allowExternalRoot, invocation.raw);
   } else if (invocation.command === "validate") {
     await validate(invocation.memoryRootArgument, invocation.manifestRelativePath, invocation.allowExternalRoot);
+  } else if (invocation.command === "rank") {
+    await rank(invocation.memoryRootArgument, invocation.allowExternalRoot, invocation.scopes);
+  } else if (invocation.command === "print-term") {
+    await printTerm();
   } else {
     await resolveCommand(invocation.memoryRootArgument, invocation.allowExternalRoot);
   }

@@ -205,5 +205,5 @@ Reminder: "Run /tdk-memory-changelog before committing to record these changes."
 
 ## Scripts
 
-- `scripts/memory-manifest.cjs` — bundled read-only Node.js CLI: line-ending-neutral `hash` (`--raw` for exact bytes), `validate`, and `resolve`
+- `scripts/memory-manifest.cjs` — bundled read-only Node.js CLI: line-ending-neutral `hash` (`--raw` for exact bytes), `validate`, `resolve`, and `rank` (free-text candidate ranking)
 - `scripts/RUNTIME-LICENSE.txt` — bundled YAML parser license

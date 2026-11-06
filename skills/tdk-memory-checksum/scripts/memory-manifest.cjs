@@ -7064,6 +7064,141 @@ var import_node_fs = require("node:fs");
 var import_node_path = require("node:path");
 var import_node_util = require("node:util");
 var import_yaml = __toESM(require_dist(), 1);
+
+// memory-query-ranking.ts
+var SCORE_ID = 5;
+var SCORE_STEM = 4;
+var SCORE_TITLE = 3;
+var SCORE_ALIAS = 2;
+var SCORE_PATH = 1;
+var SCORE_BODY = 0;
+var GUARANTEED_POSITIONS = 5;
+var MIN_SCORE_FOR_TIES = 1;
+var TIER_NOTE = 0;
+var TIER_ARC42 = 1;
+var TIER_ROOT_CONTROL = 2;
+var TIER_ARC42_README = 3;
+var ROOT_CONTROL_FILES = new Set(["README.md", "CHANGELOG.md", "memory-index.md"]);
+var ARC42_README = "arc42/README.md";
+var ARC42_PREFIX = "arc42/";
+var PINNED_PATH = "constitution.md";
+var PINNED_DOMAIN_OVERVIEW = /^domains\/[^/]+\/domain-overview\.md$/;
+var MAX_WORD_BOUNDED_LENGTH = 2;
+var PRINTABLE_TERM = /^[\p{L}\p{N} ._-]{1,64}$/u;
+function splitCamelCase(value) {
+  return value.replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2");
+}
+function tokenize(value) {
+  return splitCamelCase(value.normalize("NFC").trim()).split(/[\s._-]+/u).filter((token) => token.length > 0).map((token) => token.toLowerCase());
+}
+function compactForm(value) {
+  return tokenize(value).join("");
+}
+function printableTerm(term) {
+  const printable = tokenize(term).join(" ");
+  return PRINTABLE_TERM.test(printable) ? printable : null;
+}
+function isWordBounded(literal) {
+  return Array.from(literal).length <= MAX_WORD_BOUNDED_LENGTH;
+}
+function matcherFor(literal) {
+  const body = literal.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+  return new RegExp(isWordBounded(literal) ? `(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])` : body, "gu");
+}
+function parseTerm(term) {
+  const tokens = tokenize(term);
+  return {
+    compact: tokens.join(""),
+    tokenMatchers: tokens.map((token) => ({ pattern: matcherFor(token), wordBounded: isWordBounded(token) }))
+  };
+}
+function countMatches(matcher, text) {
+  return (text.match(matcher) ?? []).length;
+}
+function fewestOccurrences(matchers, text) {
+  let fewest = Number.POSITIVE_INFINITY;
+  for (const { pattern, wordBounded } of matchers) {
+    fewest = Math.min(fewest, countMatches(pattern, wordBounded ? text.splitAtCamelCase : text.continuous));
+    if (fewest === 0)
+      break;
+  }
+  return fewest;
+}
+function fileTier(path) {
+  if (path === ARC42_README)
+    return TIER_ARC42_README;
+  if (ROOT_CONTROL_FILES.has(path))
+    return TIER_ROOT_CONTROL;
+  if (path.startsWith(ARC42_PREFIX))
+    return TIER_ARC42;
+  return TIER_NOTE;
+}
+function isPinned(path) {
+  return path === PINNED_PATH || PINNED_DOMAIN_OVERVIEW.test(path);
+}
+function pathMatches(term, pathWithoutExtension) {
+  if (isWordBounded(term.compact)) {
+    return matcherFor(term.compact).test(splitCamelCase(pathWithoutExtension).toLowerCase());
+  }
+  return pathWithoutExtension.toLowerCase().replace(/[\s._-]/gu, "").includes(term.compact);
+}
+function scoreNote(term, note, text) {
+  const occurrences = fewestOccurrences(term.tokenMatchers, text);
+  const pathWithoutExtension = note.path.normalize("NFC").replace(/\.md$/u, "");
+  const stem = pathWithoutExtension.slice(pathWithoutExtension.lastIndexOf("/") + 1);
+  const { id, title, aliases } = note.identity;
+  const matches = (value) => value !== undefined && compactForm(value) === term.compact;
+  if (matches(id))
+    return { score: SCORE_ID, occurrences };
+  if (matches(stem))
+    return { score: SCORE_STEM, occurrences };
+  if (matches(title))
+    return { score: SCORE_TITLE, occurrences };
+  if (aliases.some(matches))
+    return { score: SCORE_ALIAS, occurrences };
+  if (pathMatches(term, pathWithoutExtension))
+    return { score: SCORE_PATH, occurrences };
+  return occurrences > 0 ? { score: SCORE_BODY, occurrences } : undefined;
+}
+function bestMatch(terms, note) {
+  const normalized = note.text.normalize("NFC");
+  const text = { continuous: normalized.toLowerCase(), splitAtCamelCase: splitCamelCase(normalized).toLowerCase() };
+  let best;
+  for (const term of terms) {
+    const match = scoreNote(term, note, text);
+    if (match === undefined)
+      continue;
+    if (best === undefined || match.score > best.score || match.score === best.score && match.occurrences > best.occurrences) {
+      best = match;
+    }
+  }
+  return best;
+}
+function compareRanked(left, right) {
+  return right.score - left.score || left.tier - right.tier || right.occurrences - left.occurrences || Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8"));
+}
+function rankNotes(terms, notes) {
+  const parsedTerms = terms.map(parseTerm).filter((term) => term.compact.length > 0);
+  const ranked = [];
+  for (const note of notes) {
+    const match = bestMatch(parsedTerms, note);
+    if (match === undefined)
+      continue;
+    ranked.push({
+      path: note.path,
+      score: match.score,
+      tier: fileTier(note.path),
+      occurrences: match.occurrences,
+      pinned: isPinned(note.path)
+    });
+  }
+  ranked.sort(compareRanked);
+  const highestScore = ranked[0]?.score;
+  const selected = ranked.filter((note, position) => position < GUARANTEED_POSITIONS || note.score >= MIN_SCORE_FOR_TIES && note.score === highestScore || note.pinned);
+  return { total: ranked.length, selected, omitted: ranked.length - selected.length };
+}
+
+// memory-manifest.ts
 var execFileAsync = import_node_util.promisify(import_node_child_process.execFile);
 var MANIFEST_VERSION = "2";
 var DEFAULT_MANIFEST_PATH = "memory.yaml";
@@ -7088,6 +7223,19 @@ var FALLBACK_MEMORY_PATH = "memory";
 var CONSTITUTION_PATH = "constitution.md";
 var MAX_CONFIG_BYTES = 1048576;
 var MAX_INDEX_BYTES = 4194304;
+var MAX_RANK_INPUT_BYTES = 1048576;
+var MAX_FRONTMATTER_CHARACTERS = 65536;
+var YAML_PARSE_OPTIONS = {
+  customTags: null,
+  merge: false,
+  prettyErrors: false,
+  resolveKnownTags: false,
+  schema: "core",
+  strict: true,
+  stringKeys: true,
+  uniqueKeys: true,
+  version: "1.2"
+};
 var FORBIDDEN_MEMORY_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\`$"';&|<>]/;
 var FORBIDDEN_LOCATION_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029`$"]/;
 var READER_VAULT_PATTERN = /^[A-Za-z0-9 ._-]{1,64}$/;
@@ -7109,7 +7257,9 @@ function usage() {
   fail(`Usage:
 ` + `  node memory-manifest.cjs hash <memoryRoot> <relPath> [--raw] [--allow-external-root]
 ` + `  node memory-manifest.cjs validate <memoryRoot> [--manifest <relativePath>] [--allow-external-root]
-` + "  node memory-manifest.cjs resolve [--memory-root <path>] [--allow-external-root]");
+` + `  node memory-manifest.cjs resolve [--memory-root <path>] [--allow-external-root]
+` + `  node memory-manifest.cjs rank <memoryRoot> [--scope <prefix>]... [--allow-external-root] < request.json
+` + "  node memory-manifest.cjs rank --print-term < request.json");
 }
 function parseInvocation(argumentsAfterNode) {
   const [command, ...rest] = argumentsAfterNode;
@@ -7190,6 +7340,34 @@ function parseInvocation(argumentsAfterNode) {
       usage();
     }
     return { command, memoryRootArgument, allowExternalRoot };
+  }
+  if (command === "rank") {
+    if (rest.length === 1 && rest[0] === "--print-term")
+      return { command: "print-term" };
+    if (rest.length === 0 || rest[0].startsWith("--"))
+      usage();
+    const memoryRootArgument = rest[0];
+    let allowExternalRoot = false;
+    const scopes = [];
+    for (let index = 1;index < rest.length; index += 1) {
+      const argument = rest[index];
+      if (argument === "--allow-external-root") {
+        if (allowExternalRoot)
+          fail("--allow-external-root may only be provided once");
+        allowExternalRoot = true;
+        continue;
+      }
+      if (argument === "--scope") {
+        if (index + 1 >= rest.length || rest[index + 1].startsWith("--"))
+          usage();
+        validateRelativePath(rest[index + 1], "--scope");
+        scopes.push(rest[index + 1]);
+        index += 1;
+        continue;
+      }
+      usage();
+    }
+    return { command, memoryRootArgument, allowExternalRoot, scopes };
   }
   usage();
 }
@@ -7539,17 +7717,7 @@ async function readManifest(manifestPath) {
   const source = await readManifestSource(manifestPath);
   let document;
   try {
-    document = import_yaml.parseDocument(source, {
-      customTags: null,
-      merge: false,
-      prettyErrors: false,
-      resolveKnownTags: false,
-      schema: "core",
-      strict: true,
-      stringKeys: true,
-      uniqueKeys: true,
-      version: "1.2"
-    });
+    document = import_yaml.parseDocument(source, YAML_PARSE_OPTIONS);
   } catch (error) {
     fail(`failed to parse manifest ${manifestPath}: ${errorMessage(error)}`);
   }
@@ -8008,6 +8176,132 @@ async function resolveStatus(explicitRoot, allowFlag) {
 async function resolveCommand(explicitRoot, allowFlag) {
   console.log(JSON.stringify(await resolveStatus(explicitRoot, allowFlag), null, 2));
 }
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+async function readRankRequest() {
+  if (process.stdin.isTTY)
+    fail("rank reads its JSON request from stdin");
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    size += chunk.length;
+    if (size > MAX_RANK_INPUT_BYTES)
+      fail(`rank input exceeds ${MAX_RANK_INPUT_BYTES} bytes`);
+    chunks.push(chunk);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    fail("rank input is not valid JSON");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    fail("rank input must be a JSON object");
+  const { terms, candidates, ...unknownKeys } = parsed;
+  if (Object.keys(unknownKeys).length > 0)
+    fail("rank input accepts only terms and candidates");
+  if (!isStringArray(terms) || terms.length === 0)
+    fail("rank input needs a non-empty terms array of strings");
+  if (candidates !== undefined && !isStringArray(candidates))
+    fail("rank input candidates must be an array of strings");
+  return { terms, candidates };
+}
+function scalarText(node) {
+  if (!import_yaml.isScalar(node) || node.value === null || node.value === undefined)
+    return;
+  return String(node.value);
+}
+function readNoteIdentity(text) {
+  const identity = { aliases: [] };
+  if (!text.startsWith(`---
+`))
+    return identity;
+  const closing = /\n---[ \t]*(?:\n|$)/.exec(text.slice(3, MAX_FRONTMATTER_CHARACTERS));
+  if (closing === null)
+    return identity;
+  let document;
+  try {
+    document = import_yaml.parseDocument(text.slice(3, 3 + closing.index), YAML_PARSE_OPTIONS);
+  } catch {
+    return identity;
+  }
+  if (document.errors.length > 0 || !import_yaml.isMap(document.contents))
+    return identity;
+  for (const pair of document.contents.items) {
+    const key = import_yaml.isScalar(pair.key) ? pair.key.value : undefined;
+    if (key === "id")
+      identity.id = scalarText(pair.value);
+    if (key === "title")
+      identity.title = scalarText(pair.value);
+    if (key === "aliases") {
+      const values = import_yaml.isSeq(pair.value) ? pair.value.items : [pair.value];
+      identity.aliases = values.map(scalarText).filter((value) => value !== undefined);
+    }
+  }
+  return identity;
+}
+async function readRankableNote(memoryRoot, relativePath) {
+  const bytes = await readRegularFile(import_node_path.join(memoryRoot, ...relativePath.split("/")));
+  const text = crlfToLf(bytes).toString("utf8");
+  return { path: relativePath, text, identity: readNoteIdentity(text) };
+}
+function isWithinScopes(relativePath, scopes) {
+  if (scopes.length === 0)
+    return true;
+  const path = relativePath.normalize("NFC");
+  return scopes.some((scope) => {
+    const prefix = scope.normalize("NFC");
+    return path === prefix || path.startsWith(`${prefix}/`);
+  });
+}
+async function rank(memoryRootArgument, allowExternalRoot, scopes) {
+  const request = await readRankRequest();
+  const memoryRoot = await resolveMemoryRoot(memoryRootArgument, allowExternalRoot);
+  const inventory = await scanFiles(memoryRoot, "", (relativePath) => relativePath.endsWith(".md"));
+  const safePaths = [];
+  const unsafePaths = new Set;
+  for (const relativePath of inventory) {
+    if (hasForbiddenLocationCharacter(relativePath))
+      unsafePaths.add(displayMemoryPath(relativePath));
+    else
+      safePaths.push(relativePath);
+  }
+  let nominated = safePaths;
+  let rejectedCandidates = 0;
+  if (request.candidates !== undefined) {
+    const diskPathByNormalForm = new Map(safePaths.map((relativePath) => [relativePath.normalize("NFC"), relativePath]));
+    const accepted = new Set;
+    for (const candidate of request.candidates) {
+      const diskPath = diskPathByNormalForm.get(candidate.normalize("NFC"));
+      if (diskPath === undefined)
+        rejectedCandidates += 1;
+      else
+        accepted.add(diskPath);
+    }
+    nominated = [...accepted];
+  }
+  const notes = [];
+  for (const relativePath of nominated) {
+    if (isWithinScopes(relativePath, scopes))
+      notes.push(await readRankableNote(memoryRoot, relativePath));
+  }
+  const { total, selected, omitted } = rankNotes(request.terms, notes);
+  const result = {
+    total,
+    selected,
+    omitted,
+    rejected_candidates: rejectedCandidates,
+    unsafe_paths: [...unsafePaths].sort((left, right) => left.localeCompare(right))
+  };
+  console.log(JSON.stringify(result, null, 2));
+}
+async function printTerm() {
+  const { terms, candidates } = await readRankRequest();
+  if (terms.length !== 1 || candidates !== undefined)
+    fail("rank --print-term needs exactly one term and no candidates");
+  console.log(JSON.stringify({ term: printableTerm(terms[0]) }));
+}
 async function main() {
   if (Number(process.versions.node.split(".")[0]) < 18)
     fail("Node.js >=18 is required");
@@ -8016,6 +8310,10 @@ async function main() {
     await hash(invocation.memoryRootArgument, invocation.relativePath, invocation.allowExternalRoot, invocation.raw);
   } else if (invocation.command === "validate") {
     await validate(invocation.memoryRootArgument, invocation.manifestRelativePath, invocation.allowExternalRoot);
+  } else if (invocation.command === "rank") {
+    await rank(invocation.memoryRootArgument, invocation.allowExternalRoot, invocation.scopes);
+  } else if (invocation.command === "print-term") {
+    await printTerm();
   } else {
     await resolveCommand(invocation.memoryRootArgument, invocation.allowExternalRoot);
   }
