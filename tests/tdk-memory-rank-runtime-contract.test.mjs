@@ -589,8 +589,13 @@ describe('rank inventory', () => {
     });
   });
 
-  test('vault state directories are not part of the inventory', () => {
-    withMemory({ '.obsidian/state.md': 'alpha\n', '.trash/old.md': 'alpha\n', 'notes/a.md': 'alpha\n' }, (context) => {
+  test('assets and vault state directories are not part of the inventory', () => {
+    const excluded = ['_templates', '_deprecated', 'memory-architect', 'assets', '.obsidian', '.trash'];
+    const notes = Object.fromEntries(excluded.map((directory) => [`${directory}/note.md`, 'alpha\n']));
+    withMemory({ ...notes, 'domains/x/assets/nested.md': 'alpha\n', 'notes/a.md': 'alpha\n' }, (context) => {
+      const ranking = rank(context, { terms: ['alpha'], candidates: [...Object.keys(notes), 'notes/a.md'] });
+      assert.deepEqual(selectedPaths(ranking), ['notes/a.md']);
+      assert.equal(ranking.rejected_candidates, excluded.length);
       assert.deepEqual(selectedPaths(rank(context, { terms: ['alpha'] })), ['notes/a.md']);
     });
   });
@@ -708,8 +713,16 @@ describe('rank --print-term', () => {
     }
   });
 
-  test('letters from other scripts stay printable', () => {
-    assert.equal(printTerm({ terms: ['Tiếng Việt'] }).stdout.trim(), JSON.stringify({ term: 'tiếng việt' }));
+  test('real queries stay printable and nothing a shell would interpret gets through', () => {
+    const printed = (term) => JSON.parse(printTerm({ terms: [term] }).stdout).term;
+
+    assert.equal(printed('Tiếng Việt'), 'tiếng việt');
+    assert.equal(printed('business rules'), 'business rules');
+    assert.equal(printed('order-state_v1.2'), 'order state v1 2');
+    assert.equal(printed('a\nb'), 'a b');
+    for (const refused of ['', 'x'.repeat(65), 'a"b', '$(id)', 'a`b', 'a;b', 'a|b', 'a\\b', "a'b"]) {
+      assert.equal(printed(refused), null, JSON.stringify(refused));
+    }
   });
 
   test('it takes exactly one term and no candidates', () => {

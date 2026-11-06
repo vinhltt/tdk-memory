@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
@@ -145,7 +146,7 @@ describe('external root contract', () => {
   });
 
   test('defines the forwarding rule, validation, worktree base, and portable evidence', () => {
-    assert.match(flat(contract), /Append `--allow-external-root` to every later runtime `hash\|validate\|resolve` call of the operation in that case, and only then/);
+    assert.match(flat(contract), /Append `--allow-external-root` to every later runtime `hash\|validate\|rank\|resolve` call of the operation in that case, and only then/);
     assert.match(contract, /C0 controls \(U\+0000-U\+001F\), DEL\s+and C1 controls \(U\+007F-U\+009F\), U\+2028, U\+2029, backslash/);
     assert.match(contract, /`~` is a literal segment/);
     assert.match(contract, /equal to the filesystem root, to the workspace, or to any ancestor of the\s+workspace is `containment`/);
@@ -166,13 +167,13 @@ describe('external root contract', () => {
     assert.match(flat(readme), /TDK consumers route through `--status`/);
   });
 
-  test('every runtime hash/validate/resolve call forwards the permission flag, except the agent check', () => {
+  test('every runtime hash/validate/rank/resolve call forwards the permission flag, except the agent check', () => {
     const callers = [];
     for (const file of markdownFiles(PLUGIN_ROOT)) {
       const relativePath = relative(PLUGIN_ROOT, file);
       if (relativePath === 'README.md' || relativePath === 'agents/tdk-memory-agent.md') continue;
       for (const line of readFileSync(file, 'utf8').split('\n')) {
-        if (/memory-manifest\.cjs" (hash|validate|resolve)/.test(line)) callers.push({ relativePath, line });
+        if (/memory-manifest\.cjs" (hash|validate|resolve|rank ")/.test(line)) callers.push({ relativePath, line });
       }
     }
     assert.ok(callers.length >= 8, `found ${callers.length} runtime calls`);
@@ -241,7 +242,94 @@ describe('agent control block', () => {
     assert.match(agent, /reject it as a configuration error\s+if it is blank or contains a control character/);
     assert.match(agent, /If `resolve` exits nonzero or prints no JSON, refuse/);
     assert.match(agent, /never add `--allow-external-root`/);
+    assert.match(flat(agent), /The one exception is your `rank` call in Step 3\.5: add the flag there only when this `resolve` returned `external: true` with a non-null root/);
+    assert.match(flat(contract), /`tdk-memory-agent` never adds the flag to `resolve`; it adds it only to `rank`/);
     assert.match(flat(agent), /`external-not-allowed`, `containment`, or `config-invalid`/);
+  });
+});
+
+describe('free-text ranking goes through the runtime', () => {
+  test('the query flow ranks through a quoted heredoc and never through argv', () => {
+    assert.match(queryFlow, /rank "<memoryRoot>" \[--allow-external-root\] <<'TDK_RANK_INPUT'\n\s*\{"terms":\["<query encoded as a JSON string>"\]\}\n\s*TDK_RANK_INPUT/);
+    assert.match(flat(queryFlow), /never emit a real line break/);
+    assert.match(flat(queryFlow), /only through this quoted heredoc, never into argv or a shell variable/);
+    assert.match(flat(queryFlow), /Set CANDIDATE_FILES to `selected`, in that order/);
+    assert.match(flat(queryFlow), /STOP with `rank-failed — <memory\.path as configured>`\. There is no manual ranking path/);
+  });
+
+  test('hand ranking rules are gone from every prompt', () => {
+    for (const [name, text] of Object.entries({ queryFlow, cliReader, agent })) {
+      for (const phrase of [/literal body match/, /UTF-8 byte order/, /UTF-8 bytes/, /stands in/, /top five/, /grep for exact keyword/, /Enumerate the complete eligible/]) {
+        assert.doesNotMatch(flat(text), phrase, `${name}: ${phrase}`);
+      }
+    }
+  });
+
+  test('the agent ranks once over scoped prefixes and reads all of the selection', () => {
+    const agentText = flat(agent);
+    assert.match(agent, /rank "<memoryRoot>" --scope "<prefix>" \[--scope "<prefix>"\]\.\.\. \[--allow-external-root\] <<'TDK_RANK_INPUT'/);
+    assert.match(agentText, /Exact-read all of `selected`, in order, and do not trim it further/);
+    assert.match(agentText, /With no relevant prefix, skip the call/);
+    assert.match(agentText, /has no trailing `\/`/);
+    assert.match(agentText, /drop one that contains a control character, a backslash, `` ` ``, `\$`, or `"`/);
+    assert.match(agentText, /Never pass `data-model`, and never add `constitution\.md` to the scope/);
+    assert.match(agentText, /in `load` mode its keywords add no paths and each is named under `## Constraints & Warnings` as `rank failed: <keyword>`/);
+    assert.match(agentText, /in `validate` mode a claim whose only route to evidence was this call is `NOT CHECKED`/);
+    assert.doesNotMatch(agent, /Scoped (Glob\/)?Grep/);
+  });
+
+  test('the CLI reader only nominates, through a normalized term', () => {
+    assert.match(cliReader, /rank --print-term <<'TDK_RANK_INPUT'/);
+    assert.match(flat(cliReader), /`\{"term":null\}`, as with a question mark or a path in the query, means skip the CLI/);
+    assert.doesNotMatch(cliReader, /\^\[\\p\{L\}/);
+    assert.match(flat(queryFlow), /a query that falls back calls `rank` without `candidates`/);
+  });
+
+  test('the contract describes rank and keeps terms out of argv', () => {
+    const text = flat(contract);
+    assert.match(text, /`rank "<memoryRoot>" \[--scope <prefix>\]\.\.\. \[--allow-external-root\]` reads `\{"terms":\[\.\.\.\],"candidates":\[\.\.\.\]\}` from stdin/);
+    assert.match(text, /they go only through a quoted heredoc, never argv/);
+    assert.match(text, /paths and integers, never note contents/);
+    assert.match(text, /`rank --print-term` takes exactly one term and no root/);
+  });
+});
+
+describe('normal mode result footer', () => {
+  test('prints integrity and coverage after the files read line', () => {
+    assert.match(queryFlow, /Files read: \{N\} \| Domains: \{list\} \| Content type: \{type\}\nIntegrity: \{clean, or: N changed, M untracked, K missing, U unsafe, index ok\|mismatch, templates T, or: no manifest\}\nCoverage: \{binding_coverage\}\n/);
+  });
+
+  test('reads every value from the preflight without another command', () => {
+    for (const row of [
+      '| N changed | `mismatches` |',
+      '| M untracked | `missing_from_manifest` |',
+      '| K missing | `missing_from_disk` |',
+      '| U unsafe | `unsafe_paths` |',
+      '| index ok or mismatch | `index_mismatch` |',
+      '| templates T | `templates_mismatches` |',
+    ]) {
+      assert.ok(queryFlow.includes(row), row);
+    }
+    assert.match(flat(queryFlow), /they cost no extra command/);
+    assert.match(flat(queryFlow), /`binding_coverage` from `resolve`, copied as is, including `unknown` and `n\/a`/);
+    assert.match(flat(querySkill), /Keep that JSON until the render step, whose `Integrity:` line reads it/);
+  });
+
+  test('never claims clean without the data for it', () => {
+    assert.match(flat(queryFlow), /Print `clean` only when every count is 0 and the index is ok/);
+    assert.match(flat(queryFlow), /`legacy_receipts` does not count/);
+    assert.match(flat(queryFlow), /print `Integrity: no manifest`, run nothing extra, and never infer `clean`/);
+    assert.match(flat(queryFlow), /manifest integrity only, not screen completeness/);
+  });
+
+  test('a free-text result also names its candidate count', () => {
+    assert.match(flat(queryFlow), /print `Candidates: \{selected\} of \{total\}` from the `rank` output, next to any `reader:` line/);
+  });
+
+  test('the agent envelope stays free of the footer', () => {
+    const agentMode = queryFlow.slice(queryFlow.indexOf('**Agent mode** (`--for-agent` flag):'));
+    assert.doesNotMatch(agentMode, /^Integrity:/m);
+    assert.doesNotMatch(agentMode, /^Coverage:/m);
   });
 });
 
@@ -269,7 +357,7 @@ describe('obsidian cli reader', () => {
 
   test('defines the term and the reader line for each caller', () => {
     const nominate = flat(section('Nominate'));
-    assert.match(nominate, /The term is the whole query for `tdk-memory-query`, the same literal the file flow greps, and one keyword or evidence phrase at a time for the agent/);
+    assert.match(nominate, /The term is the whole query for `tdk-memory-query`, the same text the file flow ranks, and one keyword or evidence phrase at a time for the agent/);
     assert.match(nominate, /The agent's own free-text evidence step reaches it; its `tdk-memory-query --for-agent` calls do not/);
     assert.match(flat(cliReader), /`tdk-memory-agent` skips Probe/);
     assert.match(flat(section('Record the reader')), /A Probe that falls back in `tdk-memory-query` counts as file nomination, and that result also prints `warning: reader-<reason>`/);
@@ -293,12 +381,47 @@ describe('obsidian cli reader', () => {
 
   test('the probe runs binary, then vault, then root comparison, and names one reason each', () => {
     const probe = section('Probe');
-    const steps = ['Locate the binary. Reason: `not-installed`', 'vault info=path', 'Compare the `realpath` output with `root`'];
+    const steps = ['Locate the binary. Reason: `not-installed`', 'vault info=path', '-ef "<root>"', 'Read the last line'];
     const positions = steps.map((step) => probe.indexOf(step));
     assert.ok(positions.every((position) => position >= 0), positions.join());
     assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
     assert.match(flat(probe), /`unknown-vault`: reason `vault-mismatch`\. `failed`, more than one line, or any other payload that is not an absolute path: reason `not-running`/);
-    assert.match(probe, /Different: reason `vault-mismatch`/);
+    assert.match(flat(probe), /`same` passes, and `different` is reason `vault-mismatch`/);
+  });
+
+  test('the probe snippet compares directories rather than path strings', { skip: process.platform === 'win32' || spawnSync('timeout', ['1', 'true']).error !== undefined }, () => {
+    const block = /```sh\n(\s*vault_path=[\s\S]*?)```/.exec(section('Probe'));
+    assert.ok(block, 'probe snippet');
+    const sandbox = mkdtempSync(join(tmpdir(), 'tdk-memory-probe-'));
+    try {
+      const stub = join(sandbox, 'stub-cli');
+      writeFileSync(stub, '#!/bin/sh\nprintf \'%s\\n\' "$STUB_PAYLOAD"\n');
+      chmodSync(stub, 0o755);
+      const root = join(sandbox, 'vault');
+      const other = join(sandbox, 'other');
+      const link = join(sandbox, 'link-to-vault');
+      mkdirSync(root);
+      mkdirSync(other);
+      symlinkSync(root, link);
+      const snippet = block[1].replaceAll('<binary>', stub).replaceAll('<vault>', 'vault-name').replaceAll('<root>', root);
+      const probe = (payload) => {
+        const result = spawnSync('sh', ['-c', snippet], {
+          encoding: 'utf8',
+          env: { PATH: process.env.PATH, STUB_PAYLOAD: payload },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        const lines = result.stdout.trim().split('\n');
+        return { payload: lines[0], verdict: lines.at(-1) };
+      };
+
+      assert.deepEqual(probe(root), { payload: `payload: ${root}`, verdict: 'same' });
+      assert.deepEqual(probe(link), { payload: `payload: ${link}`, verdict: 'same' });
+      assert.deepEqual(probe(other), { payload: `payload: ${other}`, verdict: 'different' });
+      assert.deepEqual(probe(''), { payload: 'payload: ', verdict: 'different' });
+      assert.deepEqual(probe('Vault not found.'), { payload: 'payload: Vault not found.', verdict: 'different' });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   test('the probe canonicalizes only a payload shaped like an absolute path', () => {
@@ -346,18 +469,6 @@ describe('obsidian cli reader', () => {
     assert.match(nominate, /\| Acts as `fallback` \|/);
   });
 
-  test('the documented term pattern admits real queries and nothing a shell would interpret', () => {
-    const pattern = /`(\^\[\\p\{L\}[^`]*)`/.exec(cliReader);
-    assert.ok(pattern, 'term pattern');
-    const term = new RegExp(pattern[1], 'u');
-    for (const accepted of ['business rules', 'tài khoản', 'giao dịch', 'order-state_v1.2']) {
-      assert.match(accepted, term, accepted);
-    }
-    for (const refused of ['', 'x'.repeat(65), 'a"b', '$(id)', 'a`b', 'a;b', 'a|b', 'a\nb', 'a\\b', "a'b"]) {
-      assert.doesNotMatch(refused, term, JSON.stringify(refused));
-    }
-  });
-
   test('filters nominated paths before ranking and keeps the file ranking', () => {
     const nominate = flat(section('Nominate'));
     for (const excluded of ['_templates', '_deprecated', 'memory-architect', 'assets', '.obsidian', '.trash']) {
@@ -366,8 +477,10 @@ describe('obsidian cli reader', () => {
     assert.match(nominate, /absolute \(leading `\/` or `\\`, or a drive letter\), has a `\.\.` segment/);
     assert.match(nominate, /contains a backslash, control character, U\+2028, U\+2029, `` ` ``, `\$`, or `"`/);
     assert.match(nominate, /only a path that passed this filter may reach a shell/);
-    assert.match(nominate, /existing regular file under `root`, applying both containment layers/);
-    assert.match(nominate, /same scoring and sort from `flow-query\.md`/);
+    assert.doesNotMatch(nominate, /existing regular file under `root`/);
+    assert.match(nominate, /`rank` keeps only paths in its own inventory, which applies containment and the exclusions/);
+    assert.match(nominate, /The remaining paths become `candidates` of the `rank` call/);
+    assert.match(nominate, /`total: 0` counts as a failed search/);
     assert.match(nominate, /CLI result order never affects rank/);
   });
 
