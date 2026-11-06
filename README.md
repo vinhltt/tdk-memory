@@ -130,17 +130,23 @@ validation, and atomic publication. It does not silently bless modified bytes.
 From an installed checksum skill:
 
 ```sh
-node skills/tdk-memory-checksum/scripts/memory-manifest.cjs hash /absolute/memory/root data-model/account.md
+node skills/tdk-memory-checksum/scripts/memory-manifest.cjs hash /absolute/memory/root data-model/account.md [--raw]
 node skills/tdk-memory-checksum/scripts/memory-manifest.cjs validate /absolute/memory/root
 node skills/tdk-memory-checksum/scripts/memory-manifest.cjs resolve [--memory-root <path>]
 ```
 
 Invoke from the owning workspace; append `--allow-external-root` for an external
-root when permission exists (the runtime reads no config). `hash` prints SHA-256.
+root when permission exists (the runtime reads no config). `hash` prints SHA-256 of
+the content with CRLF folded to LF for `.md`, `.md.tpl`, and `.canvas`, and of the
+exact bytes for any other file; `--raw` always uses the exact bytes. Receipts and the
+changelog's `Verified` column record the folded value, so a CRLF checkout stays clean
+and `Verified` differs from `sha256sum` on a CRLF file.
 `validate` prints integrity differences and exits 0 for a valid manifest even when
 bytes differ; malformed schema, unsafe paths, unreadable files, and missing
 manifests are fatal/nonzero. Inspect `index_mismatch` and `templates_mismatches` as
-well as the ordinary file reports. `resolve` prints the root state as JSON (what
+well as the ordinary file reports. A receipt recorded from the raw or CRLF form of the
+same content still verifies and is listed in `legacy_receipts`; `checksum --fix` can
+re-baseline it on request. `resolve` prints the root state as JSON (what
 `--status` renders); root-state problems are reported in the JSON with exit 0.
 Symbolic links inside a memory root are rejected by the inventory commands.
 

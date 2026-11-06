@@ -468,3 +468,64 @@ describe('coverage label and release', () => {
     assert.match(current[0], /`\.obsidian\/` and `\.trash\/`[\s\S]*\/tdk-memory-checksum --fix/);
   });
 });
+
+describe('flows that depend on the runtime hash', () => {
+  const templates = flat(read('skills/tdk-memory-init/references/ensure-template-set.md'));
+  const finalize = flat(read('skills/tdk-memory-update/references/finalize-written-files.md'));
+  const indexFlow = flat(read('skills/tdk-memory-update/references/regenerate-memory-index-flow.md'));
+  const checksum = flat(read('skills/tdk-memory-checksum/SKILL.md'));
+  const changelog = flat(read('skills/tdk-memory-changelog/SKILL.md'));
+  const taxonomy = flat(read('skills/tdk-memory-changelog/references/changelog-entry-format-and-change-type-taxonomy.md'));
+
+  test('the template flow hashes a seed through the runtime and never treats the flag as consent', () => {
+    assert.doesNotMatch(templates, /node:crypto/);
+    assert.match(templates, /hash "<seedDir>" "<name>\.md\.tpl" --allow-external-root/);
+    assert.match(templates, /trusted read-only asset source wherever it is installed\. It lets the runtime read the seed and is not write consent/);
+    assert.match(flat(contract), /always passes the flag to hash a trusted seed template/);
+    assert.match(flat(contract), /never pass the flag on their own, except to hash a trusted seed template/);
+  });
+
+  test('the template flow maps every validate entry to one branch and compares the seed by hash', () => {
+    for (const row of [
+      /\| No entry, destination absent \| No receipt, not installed \| Copy seed \|/,
+      /\| No entry, destination present \| Receipt present, destination equals recorded, including a legacy receipt \| `equals recorded` rows \|/,
+      /\| `actual: null` \| Receipt present, destination deleted \| Restore from the current seed \|/,
+      /\| `expected: null` \| No receipt, destination present \| Recovery row \|/,
+      /\| `expected` and `actual` both non-null \| Destination differs from recorded \| `differs from recorded` rows \|/,
+    ]) {
+      assert.match(templates, row);
+    }
+    assert.match(templates, /always compare `hash` values, never raw bytes/);
+    assert.match(templates, /only repair a missing\/stale receipt, including a legacy receipt; do not rewrite the destination/);
+  });
+
+  test('index edit detection reads the runtime result and skips without a manifest', () => {
+    assert.match(indexFlow, /read `index_mismatch` from the shipped `validate` command/);
+    assert.match(indexFlow, /Without a manifest, skip detection/);
+    assert.doesNotMatch(indexFlow, /Compute SHA256 of current/);
+  });
+
+  test('finalize accepts a raw or normalized handoff and always records the hash value', () => {
+    assert.match(finalize, /with `hash --raw` and with `hash`/);
+    assert.match(finalize, /must equal one of the two results/);
+    assert.match(finalize, /the value `hash` printed for each, even when the handoff carried the raw digest/);
+  });
+
+  test('checksum reports legacy receipts without an issue and re-baselines only on approval', () => {
+    assert.match(checksum, /Legacy receipts: \{N\} \(verified, not an issue\)/);
+    assert.match(checksum, /a report with only legacy receipts stays `CLEAN`/);
+    assert.match(checksum, /Re-baseline legacy receipts, which is optional/);
+    assert.match(checksum, /Show the count and every path in `legacy_receipts\[\]` and obtain explicit approval/);
+    assert.match(checksum, /Change only `sha256` of those paths, or `memory_index_sha256` for `memory-index\.md`, to the value `hash` prints, and keep `updated_at`, `updated_by`, and `source_version`/);
+    assert.match(checksum, /must report an empty `legacy_receipts\[\]` and unchanged `mismatches\[\]`/);
+    assert.match(checksum, /On refusal write nothing/);
+    assert.match(checksum, /Non-interactive recovery STOPs/);
+  });
+
+  test('the changelog says what Verified records', () => {
+    assert.match(changelog, /differs from `sha256sum` on a CRLF file/);
+    assert.match(changelog, /use `hash --raw`/);
+    assert.match(taxonomy, /differs from `sha256sum`/);
+    assert.match(flat(readme), /`Verified` differs from `sha256sum` on a CRLF file/);
+  });
+});

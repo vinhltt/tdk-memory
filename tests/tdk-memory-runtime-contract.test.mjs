@@ -694,6 +694,89 @@ describe('tdk memory manifest line ending handling', () => {
   });
 });
 
+describe('tdk memory manifest values that flows depend on', () => {
+  const LF_TEXT = '# Text\n\nBody\n';
+  const CRLF_TEXT = LF_TEXT.replaceAll('\n', '\r\n');
+  const hashOf = (workspace, ...args) => {
+    const result = runRuntime(workspace, ['hash', ...args]);
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+
+  test('a seed and a destination that differ only in line endings hash alike and stay out of template mismatches', () => {
+    withWorkspace((workspace) => {
+      const seedDir = join(dirname(workspace), 'plugin-assets');
+      writeRelative(seedDir, 'seed.md.tpl', LF_TEXT);
+      const memoryRoot = makeMemoryRoot(workspace);
+      const index = '# Index\n';
+      writeRelative(memoryRoot, 'memory-index.md', index);
+      writeRelative(memoryRoot, '_templates/seed.md.tpl', CRLF_TEXT);
+      writeRelative(memoryRoot, 'memory.yaml', manifestYaml({
+        indexSha256: sha256(index),
+        templates: [{ path: '_templates/seed.md.tpl', sha256: sha256(LF_TEXT), sourceVersion: '1.0.0' }],
+      }));
+
+      assert.deepEqual(report(runRuntime(workspace, ['validate', 'memory'])).templates_mismatches, []);
+      assert.equal(
+        hashOf(workspace, seedDir, 'seed.md.tpl', '--allow-external-root'),
+        hashOf(workspace, 'memory', '_templates/seed.md.tpl'),
+      );
+      expectFatal(runRuntime(workspace, ['hash', seedDir, 'seed.md.tpl']));
+    });
+  });
+
+  test('a raw handoff digest of a CRLF file equals hash --raw, and a receipt from hash validates clean', () => {
+    withWorkspace((workspace) => {
+      const memoryRoot = makeMemoryRoot(workspace);
+      const index = '# Index\n';
+      writeRelative(memoryRoot, 'memory-index.md', index);
+      writeRelative(memoryRoot, 'constitution.md', CRLF_TEXT);
+      assert.equal(hashOf(workspace, 'memory', 'constitution.md', '--raw'), sha256(CRLF_TEXT));
+
+      const receipt = hashOf(workspace, 'memory', 'constitution.md');
+      assert.equal(receipt, sha256(LF_TEXT));
+      writeRelative(memoryRoot, 'memory.yaml', manifestYaml({
+        indexSha256: sha256(index),
+        files: [{ path: 'constitution.md', sha256: receipt, updatedAt: GENERATED_AT, updatedBy: 'runtime-contract-test' }],
+      }));
+      const result = report(runRuntime(workspace, ['validate', 'memory']));
+      assert.deepEqual(result.mismatches, []);
+      assert.deepEqual(result.legacy_receipts, []);
+      assert.equal(result.verified_count, 1);
+    });
+  });
+
+  test('replacing legacy receipts with hash values empties legacy_receipts and leaves mismatches alone', () => {
+    withWorkspace((workspace) => {
+      const memoryRoot = makeMemoryRoot(workspace);
+      writeRelative(memoryRoot, 'memory-index.md', CRLF_TEXT);
+      writeRelative(memoryRoot, 'notes/legacy.md', CRLF_TEXT);
+      writeRelative(memoryRoot, 'notes/edited.md', '# Edited\n');
+      const manifest = (indexSha256, legacyReceipt) => manifestYaml({
+        indexSha256,
+        files: [
+          { path: 'notes/edited.md', sha256: sha256('# Original\n'), updatedAt: GENERATED_AT, updatedBy: 'keeper' },
+          { path: 'notes/legacy.md', sha256: legacyReceipt, updatedAt: GENERATED_AT, updatedBy: 'keeper' },
+        ],
+      });
+      writeRelative(memoryRoot, 'memory.yaml', manifest(sha256(CRLF_TEXT), sha256(CRLF_TEXT)));
+
+      const before = report(runRuntime(workspace, ['validate', 'memory']));
+      assert.deepEqual(before.legacy_receipts, ['memory-index.md', 'notes/legacy.md']);
+
+      writeRelative(memoryRoot, 'memory.candidate.yaml', manifest(
+        hashOf(workspace, 'memory', 'memory-index.md'),
+        hashOf(workspace, 'memory', 'notes/legacy.md'),
+      ));
+      const after = report(runRuntime(workspace, ['validate', 'memory', '--manifest', 'memory.candidate.yaml']));
+      assert.deepEqual(after.legacy_receipts, []);
+      assert.deepEqual(after.mismatches, before.mismatches);
+      assert.equal(after.verified_count, before.verified_count);
+      assert.equal(after.index_mismatch, false);
+    });
+  });
+});
+
 const INDEX_WITH_COVERAGE = (coverage, domains = []) => [
   '# Memory Index',
   '',
