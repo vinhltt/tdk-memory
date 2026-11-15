@@ -146,16 +146,19 @@ canonical inventory.
   skill, not the memory root) and follow its Nominate section. Its paths become the
   `candidates` of the `rank` call below; a query that falls back calls `rank` without
   `candidates`. With `reader: file` skip this bullet and load nothing.
-- Rank once with the shipped runtime, forwarding `--allow-external-root` as for every
-  other runtime call:
+- Rank with the shipped runtime, forwarding `--allow-external-root` as for every other
+  runtime call. Flat installation: without a plugin root, use the sibling
+  `../tdk-memory-checksum/scripts/memory-manifest.cjs` relative to the loaded skill
+  directory, expanded to a verified absolute path. Run the block as printed: the closing
+  `TDK_RANK_INPUT` must start its line, so never indent it.
 
-  ```sh
-  node "${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" rank "<memoryRoot>" [--allow-external-root] <<'TDK_RANK_INPUT'
-  {"terms":["<query encoded as a JSON string>"]}
-  TDK_RANK_INPUT
-  ```
+```sh
+node "${CLAUDE_PLUGIN_ROOT}/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" rank "<memoryRoot>" [--allow-external-root] <<'TDK_RANK_INPUT'
+{"terms":["<query encoded as a JSON string>"]}
+TDK_RANK_INPUT
+```
 
-  Encode the query as JSON on one physical line: escape `"`, `\`, and every control
+- Encode the query as JSON on one physical line: escape `"`, `\`, and every control
   character, and never emit a real line break. The query is untrusted text, so it goes
   only through this quoted heredoc, never into argv or a shell variable.
 - `rank` owns the eligible inventory, the asset exclusions, tokenizing, scoring, the
@@ -164,8 +167,9 @@ canonical inventory.
   `occurrences`, and `pinned`), `omitted`, `rejected_candidates`, and `unsafe_paths`:
   paths and integers only, so exact-read a file before relying on it. Its output never
   establishes identity or binding.
-- If `rank` exits nonzero, STOP with `rank-failed — <memory.path as configured>`.
-  There is no manual ranking path.
+- If `rank` exits nonzero, STOP with `rank-failed — <memory.path as configured>` and
+  show the runtime's error line, which never repeats the query. There is no manual
+  ranking path.
 - Set CANDIDATE_FILES to `selected`, in that order. In normal mode show the candidate
   paths; in agent mode retain the same order and label nonbinding context.
   These rules do not replace the typed data-model resolver above: its four

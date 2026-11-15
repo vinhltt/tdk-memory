@@ -250,11 +250,71 @@ describe('agent control block', () => {
 
 describe('free-text ranking goes through the runtime', () => {
   test('the query flow ranks through a quoted heredoc and never through argv', () => {
-    assert.match(queryFlow, /rank "<memoryRoot>" \[--allow-external-root\] <<'TDK_RANK_INPUT'\n\s*\{"terms":\["<query encoded as a JSON string>"\]\}\n\s*TDK_RANK_INPUT/);
+    assert.match(queryFlow, /rank "<memoryRoot>" \[--allow-external-root\] <<'TDK_RANK_INPUT'\n\{"terms":\["<query encoded as a JSON string>"\]\}\nTDK_RANK_INPUT$/m);
+    assert.match(flat(queryFlow), /without a plugin root, use the sibling `\.\.\/tdk-memory-checksum\/scripts\/memory-manifest\.cjs`/);
     assert.match(flat(queryFlow), /never emit a real line break/);
     assert.match(flat(queryFlow), /only through this quoted heredoc, never into argv or a shell variable/);
     assert.match(flat(queryFlow), /Set CANDIDATE_FILES to `selected`, in that order/);
-    assert.match(flat(queryFlow), /STOP with `rank-failed — <memory\.path as configured>`\. There is no manual ranking path/);
+    assert.match(flat(queryFlow), /STOP with `rank-failed — <memory\.path as configured>` and show the runtime's error line, which never repeats the query\. There is no manual ranking path/);
+  });
+
+  test('the documented rank blocks run as printed in a real shell', { skip: process.platform === 'win32' }, () => {
+    const bundle = join(SKILLS, 'tdk-memory-checksum/scripts/memory-manifest.cjs');
+    const printedBlock = (text, marker) => {
+      const block = new RegExp(String.raw`^\`\`\`sh\n(node [^\n]*${marker}[\s\S]*?)^\`\`\`$`, 'm').exec(text);
+      assert.ok(block, marker);
+      return block[1];
+    };
+    const runBlock = (script, cwd) => {
+      const result = spawnSync('sh', ['-c', script], { cwd, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+
+    const sandbox = mkdtempSync(join(tmpdir(), 'tdk-memory-rank-block-'));
+    try {
+      mkdirSync(join(sandbox, 'notes'));
+      writeFileSync(join(sandbox, 'notes/alpha.md'), 'plain\n');
+
+      const queryRanking = runBlock(
+        printedBlock(queryFlow, 'rank "<memoryRoot>"')
+          .replace('$' + '{CLAUDE_PLUGIN_ROOT}', PLUGIN_ROOT)
+          .replace('<memoryRoot>', sandbox)
+          .replace('[--allow-external-root]', '--allow-external-root')
+          .replace('<query encoded as a JSON string>', 'alpha.md'),
+        sandbox,
+      );
+      assert.deepEqual(queryRanking.selected.map((note) => note.path), ['notes/alpha.md']);
+
+      const agentRanking = runBlock(
+        printedBlock(agent, 'rank "<memoryRoot>"')
+          .replace('<plugin root>', PLUGIN_ROOT)
+          .replace('<memoryRoot>', sandbox)
+          .replace('--scope "<prefix>" [--scope "<prefix>"]...', '--scope "notes"')
+          .replace('[--allow-external-root]', '--allow-external-root')
+          .replace('<keyword encoded as a JSON string>', 'alpha'),
+        sandbox,
+      );
+      assert.deepEqual(agentRanking.selected.map((note) => note.path), ['notes/alpha.md']);
+
+      const printed = runBlock(
+        printedBlock(cliReader, 'rank --print-term')
+          .replace('<runtime>', bundle)
+          .replace('<term encoded as a JSON string>', 'Foo Bar'),
+        sandbox,
+      );
+      assert.deepEqual(printed, { term: 'foo bar' });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('a term the search cannot take and an empty ranking both fall back to file nomination', () => {
+    assert.match(flat(cliReader), /use file nomination for this query under any `on_unavailable`, because no search ran and so none failed/);
+    assert.match(flat(cliReader), /`total: 0` counts as a failed search, so falling back repeats `rank` once without `candidates`/);
+    assert.match(flat(agent), /If any keyword prints `\{"term":null\}`, or its search fails and falls back, or the call reports `total: 0`, drop `candidates` for the whole call and record file nomination/);
+    assert.match(flat(agent), /one runtime call, repeated only when the Reader section falls back/);
+    assert.doesNotMatch(flat(queryFlow), /Rank once/);
   });
 
   test('hand ranking rules are gone from every prompt', () => {
@@ -265,13 +325,14 @@ describe('free-text ranking goes through the runtime', () => {
     }
   });
 
-  test('the agent ranks once over scoped prefixes and reads all of the selection', () => {
+  test('the agent ranks over scoped prefixes and reads all of the selection', () => {
     const agentText = flat(agent);
     assert.match(agent, /rank "<memoryRoot>" --scope "<prefix>" \[--scope "<prefix>"\]\.\.\. \[--allow-external-root\] <<'TDK_RANK_INPUT'/);
     assert.match(agentText, /Exact-read all of `selected`, in order, and do not trim it further/);
     assert.match(agentText, /With no relevant prefix, skip the call/);
-    assert.match(agentText, /has no trailing `\/`/);
-    assert.match(agentText, /drop one that contains a control character, a backslash, `` ` ``, `\$`, or `"`/);
+    assert.match(agentText, /remove a trailing `\/`/);
+    assert.match(agentText, /cut one holding a pattern \(`\*`, `\?`, `\{`, `\}`, `\[`, `\]`\) back to the segments before it, so `domains\/\*\/flows` becomes `domains`/);
+    assert.match(agentText, /drop one that contains a control character, a backslash, `` ` ``, `\$`, or `"`, or that starts with `-`/);
     assert.match(agentText, /Never pass `data-model`, and never add `constitution\.md` to the scope/);
     assert.match(agentText, /in `load` mode its keywords add no paths and each is named under `## Constraints & Warnings` as `rank failed: <keyword>`/);
     assert.match(agentText, /in `validate` mode a claim whose only route to evidence was this call is `NOT CHECKED`/);
@@ -629,8 +690,9 @@ describe('flows that depend on the runtime hash', () => {
     assert.match(checksum, /a report with only legacy receipts stays `CLEAN`/);
     assert.match(checksum, /Re-baseline legacy receipts, which is optional/);
     assert.match(checksum, /Show the count and every path in `legacy_receipts\[\]` and obtain explicit approval/);
-    assert.match(checksum, /Change only `sha256` of those paths, or `memory_index_sha256` for `memory-index\.md`, to the value `hash` prints, and keep `updated_at`, `updated_by`, and `source_version`/);
-    assert.match(checksum, /must report an empty `legacy_receipts\[\]` and unchanged `mismatches\[\]`/);
+    assert.match(checksum, /run `hash` for each approved path; run `validate` again on the current manifest and keep only paths it still lists in `legacy_receipts\[\]`, reporting the rest as not re-baselined/);
+    assert.match(checksum, /change only `sha256` of the kept paths, or `memory_index_sha256` for `memory-index\.md`, to the value `hash` printed, and keep `updated_at`, `updated_by`, and `source_version`/);
+    assert.match(checksum, /must list none of the kept paths in `legacy_receipts\[\]` and report the same `mismatches\[\]` as that second `validate`/);
     assert.match(checksum, /On refusal write nothing/);
     assert.match(checksum, /Non-interactive recovery STOPs/);
   });

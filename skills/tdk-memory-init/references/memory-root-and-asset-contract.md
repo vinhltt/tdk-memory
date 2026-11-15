@@ -229,8 +229,8 @@ is not an integrity difference.
 untrusted, so they go only through a quoted heredoc, never argv. It owns free-text
 tokenizing, scoring, sorting, and selection, and prints `total`, `selected`, `omitted`,
 `rejected_candidates`, and `unsafe_paths`: paths and integers, never note contents. A
-`--scope` matches whole path segments, takes no trailing `/`, and applies before scoring,
-so a pinned note outside the scope stays out. A symlink in the scanned tree is fatal, as
+`--scope` matches whole path segments, takes no trailing `/` and no pattern, and applies
+before scoring, so a pinned note outside the scope stays out. A symlink in the scanned tree is fatal, as
 in `validate`. `rank --print-term` takes exactly one term and no root, and prints
 `{"term":...}` with a normalized term that is inert inside double quotes, or `null`.
 `resolve [--memory-root "<path>"] [--allow-external-root]` applies section 1 and

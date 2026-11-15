@@ -186,12 +186,16 @@ If `--fix` is present, ask which exact discrepancies and changed bytes to accept
 - Repair the index checksum or template receipts after reviewing the actual bytes
 - Re-baseline legacy receipts, which is optional because they keep verifying
   indefinitely. Show the count and every path in `legacy_receipts[]` and obtain
-  explicit approval. Change only `sha256` of those paths, or `memory_index_sha256` for
-  `memory-index.md`, to the value `hash` prints, and keep `updated_at`, `updated_by`,
+  explicit approval. A file can change while approval waits, so work in this order: run
+  `hash` for each approved path; run `validate` again on the current manifest and keep
+  only paths it still lists in `legacy_receipts[]`, reporting the rest as not
+  re-baselined; change only `sha256` of the kept paths, or `memory_index_sha256` for
+  `memory-index.md`, to the value `hash` printed, and keep `updated_at`, `updated_by`,
   and `source_version`. Publish through the temporary candidate below; the candidate
-  must report an empty `legacy_receipts[]` and unchanged `mismatches[]`. On refusal
-  write nothing. This is not a rehash of the tree, because `validate` has already
-  proven each of these files holds the recorded content.
+  must list none of the kept paths in `legacy_receipts[]` and report the same
+  `mismatches[]` as that second `validate`. On refusal write nothing. This is not a
+  rehash of the tree, because the second `validate` has just proven each kept path holds
+  the recorded content, and the candidate check catches a change after it.
 
 Preserve all unaffected file metadata and `templates[]`. Back up existing
 malformed manifest bytes before repair; for a missing manifest record that no

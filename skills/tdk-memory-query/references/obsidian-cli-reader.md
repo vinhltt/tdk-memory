@@ -110,17 +110,20 @@ not.
 1. **Term.** The term is the whole query for `tdk-memory-query`, the same text the
    file flow ranks, and one keyword or evidence phrase at a time for the agent.
    Normalize it through the runtime, which takes no root and reads no file. Encode it
-   as JSON on one physical line and never place it in argv:
+   as JSON on one physical line and never place it in argv. `<runtime>` is the
+   `memory-manifest.cjs` path your caller already uses for `resolve`. Run the block as
+   printed: the closing `TDK_RANK_INPUT` must start its line, so never indent it.
 
-   ```sh
-   node "<plugin root>/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" rank --print-term <<'TDK_RANK_INPUT'
-   {"terms":["<term encoded as a JSON string>"]}
-   TDK_RANK_INPUT
-   ```
+```sh
+node "<runtime>" rank --print-term <<'TDK_RANK_INPUT'
+{"terms":["<term encoded as a JSON string>"]}
+TDK_RANK_INPUT
+```
 
    The printed `term` stays inert inside double quotes and is what the search uses.
    `{"term":null}`, as with a question mark or a path in the query, means skip the CLI
-   and use file nomination for this query.
+   and use file nomination for this query under any `on_unavailable`, because no search
+   ran and so none failed. The agent gives up `candidates` for the whole call.
 2. **Search.**
 
    ```sh
@@ -142,7 +145,8 @@ not.
    `flow-query.md` for `tdk-memory-query`, and Step 3.5 for the agent, which gathers
    every keyword's paths into one call. `rank` keeps only paths in its own inventory,
    which applies containment and the exclusions, and scores them like any other
-   note. `total: 0` counts as a failed search. CLI result order never affects rank.
+   note. `total: 0` counts as a failed search, so falling back repeats `rank` once
+   without `candidates`. CLI result order never affects rank.
 
 A failed search falls back for that query only:
 

@@ -129,8 +129,9 @@ cross-domain discovery; do not exit before Step 3.5.
 
 Read the already loaded index's domain scopes and typed routing tables. Match
 feature keywords against domains beyond the initially selected domain, then rank only
-those relevant domain and typed prefixes in one runtime call. With no relevant prefix,
-skip the call: `rank` without `--scope` reads the whole root.
+those relevant domain and typed prefixes in one runtime call, repeated only when the
+Reader section falls back. With no relevant prefix, skip the call: `rank` without
+`--scope` reads the whole root.
 
 ```sh
 node "<plugin root>/skills/tdk-memory-checksum/scripts/memory-manifest.cjs" rank "<memoryRoot>" --scope "<prefix>" [--scope "<prefix>"]... [--allow-external-root] <<'TDK_RANK_INPUT'
@@ -140,14 +141,18 @@ TDK_RANK_INPUT
 
 Put every keyword in `terms`. Encode them as JSON on one physical line, escaping `"`,
 `\`, and every control character; a keyword never goes into argv or a shell variable. A
-prefix is relative to the memory root and has no trailing `/`. It comes from the index
-and lands inside double quotes, so drop one that contains a control character, a
-backslash, `` ` ``, `$`, or `"`. Never pass `data-model`, and never add
-`constitution.md` to the scope. With `reader: obsidian-cli`, search each keyword through
-the Reader section and put the filtered paths in `candidates` of this same call. If any
-keyword's search fails and falls back, drop `candidates` for the whole call and record
-file nomination; a keyword whose search fails under `onUnavailable: fail` adds no paths
-and is named under `## Constraints & Warnings` as `reader search failed: <keyword>`.
+prefix is relative to the memory root: remove a trailing `/`, and cut one holding a
+pattern (`*`, `?`, `{`, `}`, `[`, `]`) back to the segments before it, so
+`domains/*/flows` becomes `domains`, because `rank` refuses a pattern. It comes from the
+index and lands inside double quotes, so drop one that contains a control character, a
+backslash, `` ` ``, `$`, or `"`, or that starts with `-`. Never pass `data-model`, and
+never add `constitution.md` to the scope. With `reader: obsidian-cli`, search each keyword
+through the Reader section and put the filtered paths in `candidates` of this same call.
+If any keyword prints `{"term":null}`, or its search fails and falls back, or the call
+reports `total: 0`, drop `candidates` for the whole call and record file nomination. A
+keyword whose search fails under `onUnavailable: fail` adds no paths and is named under
+`## Constraints & Warnings` as `reader search failed: <keyword>`; `total: 0` under that
+setting does the same for every keyword of the call.
 
 Exact-read all of `selected`, in order, and do not trim it further: `rank` alone decides
 how many. Its paths are relative to the memory root, so prepend `<memoryRoot>` when
