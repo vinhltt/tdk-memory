@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,9 @@ import { describe, test } from 'node:test';
 const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
 const RUNTIME_BUNDLE = resolve(TESTS_DIR, '..', 'skills/tdk-memory-checksum/scripts/memory-manifest.cjs');
 const POSIX_ONLY = { skip: process.platform === 'win32' ? 'needs POSIX file names and shell' : false };
+// spawnSync blocks the event loop, so the test runner's own timeout cannot stop a runtime
+// that never exits. This bound turns such a hang into a failed test.
+const SUBPROCESS_TIMEOUT_MS = 30_000;
 
 function writeNote(root, relativePath, contents) {
   const target = join(root, ...relativePath.split('/'));
@@ -36,6 +39,7 @@ function runRank({ workspace }, args, request) {
     cwd: workspace,
     encoding: 'utf8',
     input: typeof request === 'string' ? request : JSON.stringify(request),
+    timeout: SUBPROCESS_TIMEOUT_MS,
   });
 }
 
@@ -66,6 +70,7 @@ function printTerm(request) {
       cwd: sandbox,
       encoding: 'utf8',
       input: JSON.stringify(request),
+      timeout: SUBPROCESS_TIMEOUT_MS,
     });
   } finally {
     rmSync(sandbox, { recursive: true, force: true });
@@ -120,7 +125,7 @@ describe('rank term handling', () => {
         '',
       ].join('\n');
 
-      const result = spawnSync('sh', ['-c', script], { cwd: workspace, encoding: 'utf8' });
+      const result = spawnSync('sh', ['-c', script], { cwd: workspace, encoding: 'utf8', timeout: SUBPROCESS_TIMEOUT_MS });
 
       assert.equal(result.status, 0, result.stderr);
       assert.equal(existsSync(marker), false);
@@ -148,6 +153,7 @@ describe('rank term handling', () => {
     withMemory({ 'notes/a.md': 'alpha\n' }, (context) => {
       assert.equal(rank(context, { terms: ['---'] }).total, 0);
       assert.equal(rank(context, { terms: ['   '] }).total, 0);
+      assert.deepEqual(selectedPaths(rank(context, { terms: ['---', 'alpha'] })), ['notes/a.md']);
     });
   });
 
@@ -252,6 +258,57 @@ describe('rank scoring', () => {
         assert.equal(assistant.selected[0].occurrences, 2);
       },
     );
+  });
+
+  test('a camelCase term finds every spelling of itself and no lookalike', () => {
+    withMemory(
+      {
+        'notes/lower.md': 'runs on ios, macos, iphone, grpc, ekyc, b2b\n',
+        'notes/upper.md': 'RUNS ON IOS, MACOS, IPHONE, GRPC, EKYC, B2B\n',
+        'notes/own.md': 'runs on iOS, macOS, iPhone, gRPC, eKYC, B2B\n',
+        'notes/lookalike.md': 'aioli Ohio machinos tiphone agrpc2 ekycs ab2b\n',
+      },
+      (context) => {
+        for (const term of ['iOS', 'macOS', 'iPhone', 'gRPC', 'eKYC', 'B2B']) {
+          const found = selectedPaths(rank(context, { terms: [term] })).sort();
+          assert.deepEqual(found, ['notes/lower.md', 'notes/own.md', 'notes/upper.md'], term);
+        }
+      },
+    );
+  });
+
+  test('each spelling of a camelCase word counts once, and every other word stays required', () => {
+    withMemory({ 'notes/both.md': 'iOS and ios app\n', 'notes/alone.md': 'ios only\n' }, (context) => {
+      const single = rank(context, { terms: ['iOS'] });
+      assert.equal(single.selected.find((note) => note.path === 'notes/both.md').occurrences, 2);
+
+      assert.deepEqual(selectedPaths(rank(context, { terms: ['iOS app'] })), ['notes/both.md']);
+    });
+  });
+
+  test('a query naming a file finds the note the way its name does', () => {
+    withMemory(
+      {
+        'README.md': 'plain\n',
+        'constitution.md': 'plain\n',
+        'domains/foo-bar/services.md': 'plain\n',
+        'notes/other.md': 'nothing here\n',
+      },
+      (context) => {
+        assert.equal(scoreOf(rank(context, { terms: ['README.md'] }), 'README.md'), 4);
+        assert.equal(scoreOf(rank(context, { terms: ['readme.MD'] }), 'README.md'), 4);
+        assert.equal(scoreOf(rank(context, { terms: ['services.md'] }), 'domains/foo-bar/services.md'), 4);
+        assert.equal(scoreOf(rank(context, { terms: ['domains/foo-bar/services.md'] }), 'domains/foo-bar/services.md'), 1);
+        assert.deepEqual(rank(context, { terms: ['constitution.md'] }), rank(context, { terms: ['constitution'] }));
+      },
+    );
+  });
+
+  test('only a final .md after a name is an extension', () => {
+    withMemory({ 'notes/a.md': 'the md format\n', 'notes/b.md': 'the format\n' }, (context) => {
+      assert.deepEqual(selectedPaths(rank(context, { terms: ['.md'] })), ['notes/a.md']);
+      assert.deepEqual(selectedPaths(rank(context, { terms: ['md.format'] })), ['notes/a.md']);
+    });
   });
 
   test('a long token still finds a camelCase spelling across its boundary', () => {
@@ -463,6 +520,16 @@ describe('rank scope', () => {
     'other/y.md': 'alpha\n',
   };
 
+  test('a scope holding a pattern is refused rather than matching nothing', () => {
+    withMemory({ 'domains/a/flows/x.md': 'alpha\n' }, (context) => {
+      for (const scope of ['domains/*/flows', 'domains/{domain}/flows', 'domains/a?', 'domains/[a]']) {
+        const result = runRank(context, [context.memoryRoot, '--scope', scope], { terms: ['alpha'] });
+        expectFatal(result);
+        assert.match(result.stderr, /not a pattern/, scope);
+      }
+    });
+  });
+
   test('a scope matches whole segments and is repeatable', () => {
     withMemory(notes, (context) => {
       assert.deepEqual(selectedPaths(rank(context, { terms: ['alpha'] }, '--scope', 'domains/foo')), [
@@ -562,6 +629,22 @@ describe('rank candidates', () => {
 });
 
 describe('rank inventory', () => {
+  test(
+    'an unreadable note stops ranking, naming the note and never the term',
+    { skip: process.platform === 'win32' || process.getuid?.() === 0 },
+    () => {
+      withMemory({ 'notes/locked.md': 'alpha\n', 'notes/open.md': 'termsentinel\n' }, (context) => {
+        chmodSync(join(context.memoryRoot, 'notes/locked.md'), 0o000);
+
+        const result = runRank(context, [context.memoryRoot], { terms: ['termsentinel'] });
+
+        expectFatal(result);
+        assert.match(result.stderr, /notes\/locked\.md/);
+        assert.ok(!result.stderr.includes('termsentinel'));
+      });
+    },
+  );
+
   test('a symlink in the scanned tree is fatal and does not reveal note contents', POSIX_ONLY, () => {
     withMemory({ 'notes/a.md': 'alpha BODY_SENTINEL_VALUE\n' }, (context) => {
       symlinkSync(join(context.memoryRoot, 'notes/a.md'), join(context.memoryRoot, 'notes/link.md'));
@@ -688,8 +771,10 @@ describe('rank output and input safety', () => {
     withMemory({ 'notes/a.md': 'alpha\n' }, (context) => {
       const singleToken = 'inputsentinel'.repeat(75_000);
       const manyTokens = Array.from({ length: 300_000 }, () => 'ab').join(' ');
+      const pastTheRegularExpressionLimit = 'q'.repeat(975_000);
+      const longCamelCaseWord = 'aB'.repeat(480_000);
 
-      for (const term of [singleToken, manyTokens]) {
+      for (const term of [singleToken, manyTokens, pastTheRegularExpressionLimit, longCamelCaseWord]) {
         assert.equal(rank(context, { terms: [term] }).total, 0);
       }
     });
@@ -703,6 +788,12 @@ describe('rank --print-term', () => {
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout.trim(), '{"term":"foo bar"}');
     }
+  });
+
+  test('a file name prints the term of its note', () => {
+    const result = printTerm({ terms: ['README.md'] });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), '{"term":"readme"}');
   });
 
   test('a term outside the inert character set prints null', () => {

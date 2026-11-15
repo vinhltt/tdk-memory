@@ -7085,44 +7085,69 @@ var PINNED_PATH = "constitution.md";
 var PINNED_DOMAIN_OVERVIEW = /^domains\/[^/]+\/domain-overview\.md$/;
 var MAX_WORD_BOUNDED_LENGTH = 2;
 var PRINTABLE_TERM = /^[\p{L}\p{N} ._-]{1,64}$/u;
+var NOTE_EXTENSION = /(?<=.)\.md$/iu;
+var WORD_CHARACTER_AT_END = /[\p{L}\p{N}]$/u;
+var WORD_CHARACTER_AT_START = /^[\p{L}\p{N}]/u;
 function splitCamelCase(value) {
   return value.replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2");
 }
-function tokenize(value) {
-  return splitCamelCase(value.normalize("NFC").trim()).split(/[\s._-]+/u).filter((token) => token.length > 0).map((token) => token.toLowerCase());
+function wordsOf(value) {
+  return value.normalize("NFC").trim().replace(NOTE_EXTENSION, "").split(/[\s._-]+/u).filter((word) => word.length > 0);
+}
+function partsOf(word) {
+  return splitCamelCase(word).split(" ").map((part) => part.toLowerCase());
 }
 function compactForm(value) {
-  return tokenize(value).join("");
+  return wordsOf(value).flatMap(partsOf).join("");
 }
 function printableTerm(term) {
-  const printable = tokenize(term).join(" ");
+  const printable = wordsOf(term).flatMap(partsOf).join(" ");
   return PRINTABLE_TERM.test(printable) ? printable : null;
 }
 function isWordBounded(literal) {
   return Array.from(literal).length <= MAX_WORD_BOUNDED_LENGTH;
 }
-function matcherFor(literal) {
-  const body = literal.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
-  return new RegExp(isWordBounded(literal) ? `(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])` : body, "gu");
-}
 function parseTerm(term) {
-  const tokens = tokenize(term);
-  return {
-    compact: tokens.join(""),
-    tokenMatchers: tokens.map((token) => ({ pattern: matcherFor(token), wordBounded: isWordBounded(token) }))
-  };
+  const words = wordsOf(term).map((word) => {
+    const parts = partsOf(word);
+    return { compact: parts.join(""), parts };
+  });
+  return { compact: words.map((word) => word.compact).join(""), words };
 }
-function countMatches(matcher, text) {
-  return (text.match(matcher) ?? []).length;
+function isWholeWord(text, start, end) {
+  return !WORD_CHARACTER_AT_END.test(text.slice(Math.max(0, start - 2), start)) && !WORD_CHARACTER_AT_START.test(text.slice(end, end + 2));
 }
-function fewestOccurrences(matchers, text) {
+function countOccurrences(literal, text, wholeWordOnly) {
+  if (literal.length === 0)
+    return 0;
+  let count = 0;
+  let position = text.indexOf(literal);
+  while (position !== -1) {
+    const end = position + literal.length;
+    if (wholeWordOnly && !isWholeWord(text, position, end)) {
+      position = text.indexOf(literal, position + 1);
+    } else {
+      count += 1;
+      position = text.indexOf(literal, end);
+    }
+  }
+  return count;
+}
+function fewestOf(items, occurrencesOf) {
   let fewest = Number.POSITIVE_INFINITY;
-  for (const { pattern, wordBounded } of matchers) {
-    fewest = Math.min(fewest, countMatches(pattern, wordBounded ? text.splitAtCamelCase : text.continuous));
+  for (const item of items) {
+    fewest = Math.min(fewest, occurrencesOf(item));
     if (fewest === 0)
       break;
   }
   return fewest;
+}
+function occurrencesOfPart(part, text) {
+  return isWordBounded(part) ? countOccurrences(part, text.splitAtCamelCase, true) : countOccurrences(part, text.continuous, false);
+}
+function occurrencesOfWord(word, text) {
+  const asParts = fewestOf(word.parts, (part) => occurrencesOfPart(part, text));
+  return word.parts.length > 1 ? Math.max(asParts, countOccurrences(word.compact, text.continuous, true)) : asParts;
 }
 function fileTier(path) {
   if (path === ARC42_README)
@@ -7138,12 +7163,12 @@ function isPinned(path) {
 }
 function pathMatches(term, pathWithoutExtension) {
   if (isWordBounded(term.compact)) {
-    return matcherFor(term.compact).test(splitCamelCase(pathWithoutExtension).toLowerCase());
+    return countOccurrences(term.compact, splitCamelCase(pathWithoutExtension).toLowerCase(), true) > 0;
   }
   return pathWithoutExtension.toLowerCase().replace(/[\s._-]/gu, "").includes(term.compact);
 }
 function scoreNote(term, note, text) {
-  const occurrences = fewestOccurrences(term.tokenMatchers, text);
+  const occurrences = fewestOf(term.words, (word) => occurrencesOfWord(word, text));
   const pathWithoutExtension = note.path.normalize("NFC").replace(/\.md$/u, "");
   const stem = pathWithoutExtension.slice(pathWithoutExtension.lastIndexOf("/") + 1);
   const { id, title, aliases } = note.identity;
@@ -7223,6 +7248,7 @@ var FALLBACK_MEMORY_PATH = "memory";
 var CONSTITUTION_PATH = "constitution.md";
 var MAX_CONFIG_BYTES = 1048576;
 var MAX_INDEX_BYTES = 4194304;
+var SCOPE_PATTERN_CHARACTER = /[*?{}[\]]/;
 var MAX_RANK_INPUT_BYTES = 1048576;
 var MAX_FRONTMATTER_CHARACTERS = 65536;
 var YAML_PARSE_OPTIONS = {
@@ -7361,6 +7387,8 @@ function parseInvocation(argumentsAfterNode) {
         if (index + 1 >= rest.length || rest[index + 1].startsWith("--"))
           usage();
         validateRelativePath(rest[index + 1], "--scope");
+        if (SCOPE_PATTERN_CHARACTER.test(rest[index + 1]))
+          fail("--scope takes a literal path prefix, not a pattern");
         scopes.push(rest[index + 1]);
         index += 1;
         continue;

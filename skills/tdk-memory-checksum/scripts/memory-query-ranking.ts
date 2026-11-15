@@ -28,18 +28,19 @@ export type Ranking = {
   omitted: number;
 };
 
-type TokenMatcher = {
-  pattern: RegExp;
-  wordBounded: boolean;
+// One whitespace or separator delimited word of a term, with its camelCase parts.
+type TermWord = {
+  compact: string;
+  parts: string[];
 };
 
 type ParsedTerm = {
   compact: string;
-  tokenMatchers: TokenMatcher[];
+  words: TermWord[];
 };
 
 // Long tokens search the continuous text, so `github` finds `GitHub`. Short tokens search
-// the text split at camelCase boundaries, so `iOS` and `fooAi` find their own spelling.
+// the text split at camelCase boundaries, so `ai` finds `fooAi` and still not `email`.
 type SearchableText = {
   continuous: string;
   splitAtCamelCase: string;
@@ -77,25 +78,39 @@ const PINNED_DOMAIN_OVERVIEW = /^domains\/[^/]+\/domain-overview\.md$/;
 const MAX_WORD_BOUNDED_LENGTH = 2;
 const PRINTABLE_TERM = /^[\p{L}\p{N} ._-]{1,64}$/u;
 
+// A query naming a note's file means that note, so `README.md` searches like `README`.
+// The lookbehind keeps a bare `.md` as a word of its own.
+const NOTE_EXTENSION = /(?<=.)\.md$/iu;
+const WORD_CHARACTER_AT_END = /[\p{L}\p{N}]$/u;
+const WORD_CHARACTER_AT_START = /^[\p{L}\p{N}]/u;
+
 function splitCamelCase(value: string): string {
   return value.replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2");
 }
 
-export function tokenize(value: string): string[] {
-  return splitCamelCase(value.normalize("NFC").trim())
+function wordsOf(value: string): string[] {
+  return value
+    .normalize("NFC")
+    .trim()
+    .replace(NOTE_EXTENSION, "")
     .split(/[\s._-]+/u)
-    .filter((token) => token.length > 0)
-    .map((token) => token.toLowerCase());
+    .filter((word) => word.length > 0);
+}
+
+function partsOf(word: string): string[] {
+  return splitCamelCase(word)
+    .split(" ")
+    .map((part) => part.toLowerCase());
 }
 
 function compactForm(value: string): string {
-  return tokenize(value).join("");
+  return wordsOf(value).flatMap(partsOf).join("");
 }
 
 // The term a search tool may receive: lowercase tokens over characters that stay inert
 // inside double quotes. Null means the tool must not be asked at all.
 export function printableTerm(term: string): string | null {
-  const printable = tokenize(term).join(" ");
+  const printable = wordsOf(term).flatMap(partsOf).join(" ");
   return PRINTABLE_TERM.test(printable) ? printable : null;
 }
 
@@ -103,30 +118,61 @@ function isWordBounded(literal: string): boolean {
   return Array.from(literal).length <= MAX_WORD_BOUNDED_LENGTH;
 }
 
-function matcherFor(literal: string): RegExp {
-  const body = literal.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
-  return new RegExp(isWordBounded(literal) ? `(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])` : body, "gu");
-}
-
 function parseTerm(term: string): ParsedTerm {
-  const tokens = tokenize(term);
-  return {
-    compact: tokens.join(""),
-    tokenMatchers: tokens.map((token) => ({ pattern: matcherFor(token), wordBounded: isWordBounded(token) })),
-  };
+  const words = wordsOf(term).map((word) => {
+    const parts = partsOf(word);
+    return { compact: parts.join(""), parts };
+  });
+  return { compact: words.map((word) => word.compact).join(""), words };
 }
 
-function countMatches(matcher: RegExp, text: string): number {
-  return (text.match(matcher) ?? []).length;
+// Two code units are enough to see a whole character, including a surrogate pair.
+function isWholeWord(text: string, start: number, end: number): boolean {
+  return (
+    !WORD_CHARACTER_AT_END.test(text.slice(Math.max(0, start - 2), start)) &&
+    !WORD_CHARACTER_AT_START.test(text.slice(end, end + 2))
+  );
 }
 
-function fewestOccurrences(matchers: TokenMatcher[], text: SearchableText): number {
+// Counts non-overlapping matches. Terms are untrusted, so no regular expression is ever
+// built from one: its size or syntax could fail with a message that repeats the term.
+function countOccurrences(literal: string, text: string, wholeWordOnly: boolean): number {
+  // `indexOf` never returns -1 for an empty literal, so the loop below could not end.
+  if (literal.length === 0) return 0;
+  let count = 0;
+  let position = text.indexOf(literal);
+  while (position !== -1) {
+    const end = position + literal.length;
+    if (wholeWordOnly && !isWholeWord(text, position, end)) {
+      position = text.indexOf(literal, position + 1);
+    } else {
+      count += 1;
+      position = text.indexOf(literal, end);
+    }
+  }
+  return count;
+}
+
+function fewestOf<T>(items: T[], occurrencesOf: (item: T) => number): number {
   let fewest = Number.POSITIVE_INFINITY;
-  for (const { pattern, wordBounded } of matchers) {
-    fewest = Math.min(fewest, countMatches(pattern, wordBounded ? text.splitAtCamelCase : text.continuous));
+  for (const item of items) {
+    fewest = Math.min(fewest, occurrencesOf(item));
     if (fewest === 0) break;
   }
   return fewest;
+}
+
+function occurrencesOfPart(part: string, text: SearchableText): number {
+  return isWordBounded(part)
+    ? countOccurrences(part, text.splitAtCamelCase, true)
+    : countOccurrences(part, text.continuous, false);
+}
+
+// A word split at camelCase also counts its joined form as one whole word, because a note
+// may spell it differently: `iOS` finds `ios` and `IOS`, and still not `aioli`.
+function occurrencesOfWord(word: TermWord, text: SearchableText): number {
+  const asParts = fewestOf(word.parts, (part) => occurrencesOfPart(part, text));
+  return word.parts.length > 1 ? Math.max(asParts, countOccurrences(word.compact, text.continuous, true)) : asParts;
 }
 
 function fileTier(path: string): number {
@@ -142,13 +188,13 @@ function isPinned(path: string): boolean {
 
 function pathMatches(term: ParsedTerm, pathWithoutExtension: string): boolean {
   if (isWordBounded(term.compact)) {
-    return matcherFor(term.compact).test(splitCamelCase(pathWithoutExtension).toLowerCase());
+    return countOccurrences(term.compact, splitCamelCase(pathWithoutExtension).toLowerCase(), true) > 0;
   }
   return pathWithoutExtension.toLowerCase().replace(/[\s._-]/gu, "").includes(term.compact);
 }
 
 function scoreNote(term: ParsedTerm, note: RankableNote, text: SearchableText): ScoredMatch | undefined {
-  const occurrences = fewestOccurrences(term.tokenMatchers, text);
+  const occurrences = fewestOf(term.words, (word) => occurrencesOfWord(word, text));
   const pathWithoutExtension = note.path.normalize("NFC").replace(/\.md$/u, "");
   const stem = pathWithoutExtension.slice(pathWithoutExtension.lastIndexOf("/") + 1);
   const { id, title, aliases } = note.identity;
@@ -186,6 +232,8 @@ function compareRanked(left: RankedNote, right: RankedNote): number {
 }
 
 export function rankNotes(terms: string[], notes: RankableNote[]): Ranking {
+  // A term without tokens matches nothing. Kept, it would have no words to require, and
+  // every note would count as a body match.
   const parsedTerms = terms.map(parseTerm).filter((term) => term.compact.length > 0);
   const ranked: RankedNote[] = [];
 

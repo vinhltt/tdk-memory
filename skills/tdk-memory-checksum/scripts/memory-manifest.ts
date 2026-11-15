@@ -35,6 +35,8 @@ const FALLBACK_MEMORY_PATH = "memory";
 const CONSTITUTION_PATH = "constitution.md";
 const MAX_CONFIG_BYTES = 1_048_576;
 const MAX_INDEX_BYTES = 4_194_304;
+// A scope is compared literally, so a pattern would match nothing and look like no result.
+const SCOPE_PATTERN_CHARACTER = /[*?{}[\]]/;
 const MAX_RANK_INPUT_BYTES = 1_048_576;
 const MAX_FRONTMATTER_CHARACTERS = 65_536;
 const YAML_PARSE_OPTIONS = {
@@ -226,6 +228,7 @@ function parseInvocation(argumentsAfterNode: string[]): Invocation {
       if (argument === "--scope") {
         if (index + 1 >= rest.length || rest[index + 1].startsWith("--")) usage();
         validateRelativePath(rest[index + 1], "--scope");
+        if (SCOPE_PATTERN_CHARACTER.test(rest[index + 1])) fail("--scope takes a literal path prefix, not a pattern");
         scopes.push(rest[index + 1]);
         index += 1;
         continue;
