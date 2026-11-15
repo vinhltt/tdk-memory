@@ -623,9 +623,9 @@ describe('coverage label and release', () => {
       'skills/tdk-memory-checksum/SKILL.md',
       'skills/tdk-memory-changelog/SKILL.md',
     ]) {
-      assert.match(read(path), /^metadata:\s*\r?\n  version: 4\.3\.0$/m, path);
+      assert.match(read(path), /^metadata:\s*\r?\n  version: 4\.4\.0$/m, path);
     }
-    assert.match(agent, /^metadata:\r?\n  version: "4\.3\.0"$/m);
+    assert.match(agent, /^metadata:\r?\n  version: "4\.4\.0"$/m);
   });
 
   test('documents the added, changed, and note entries in the changelog', () => {
@@ -640,6 +640,11 @@ describe('coverage label and release', () => {
     assert.match(current[0], /### Added[\s\S]*obsidian-cli/);
     assert.match(current[0], /### Changed[\s\S]*`unsupported-reader` is gone/);
     assert.match(current[0], /`\.obsidian\/` and `\.trash\/`[\s\S]*\/tdk-memory-checksum --fix/);
+    const release = /## \[4\.4\.0\][\s\S]*?(?=\n## \[)/.exec(changelog);
+    assert.ok(release, '4.4.0 section');
+    assert.match(release[0], /### Added[\s\S]*`rank[\s\S]*`legacy_receipts`[\s\S]*`hash --raw`[\s\S]*`Integrity:`/);
+    assert.match(release[0], /### Changed[\s\S]*fold CRLF to LF[\s\S]*Free-text results come from `rank`/);
+    assert.match(release[0], /### Fixed[\s\S]*core\.autocrlf=true[\s\S]*`-ef`/);
   });
 });
 
